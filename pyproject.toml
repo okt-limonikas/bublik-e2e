@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "bublik-e2e"
+version = "0.1.0"
+description = "Deterministic Bublik fixture generation, publication, and API import (the bublik-e2e CLI) with bundled providers."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+dependencies = ["typer>=0.12", "rich>=13"]
+
+[project.scripts]
+bublik-e2e = "cli:main"
+
+# Bundled fixture providers, discovered at runtime by core/discovery.py. The
+# group key is just a registry string; targets point at the flat modules.
+[project.entry-points."bublik_e2e.fixtures"]
+basic = "fixtures.basic.fixture:fixture"
+dpdk = "fixtures.dpdk.fixture:fixture"
+net-drv = "fixtures.net_drv.fixture:fixture"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/core", "src/fixtures"]
+force-include = { "src/cli.py" = "cli.py" }
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "README.md"]
