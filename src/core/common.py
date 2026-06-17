@@ -1,0 +1,41 @@
+"""Shared helpers for the Bublik e2e fixture toolkit."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import re
+from typing import Any
+import urllib.parse
+
+from rich.console import Console
+
+# Shared consoles so styling/theme stay consistent across the CLI and core.
+# Status/progress and human-facing notices go to stderr, keeping stdout clean
+# for machine-readable output (e.g. the manifest path printed by `generate`).
+console = Console(stderr=True)
+
+
+class CliError(RuntimeError):
+    """Raised for user-facing errors; surfaced as ``error: ...`` on stderr."""
+
+
+def sanitize_path_part(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip("-") or "fixture"
+
+
+def read_json(path: Path) -> Any:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def write_json(path: Path, payload: Any, pretty: bool) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    kwargs = {"indent": 2, "sort_keys": True} if pretty else {"separators": (",", ":")}
+    path.write_text(json.dumps(payload, **kwargs) + "\n", encoding="utf-8")
+
+
+def normalize_url(value: str) -> str:
+    parsed = urllib.parse.urlsplit(value)
+    return urllib.parse.urlunsplit(
+        (parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), "", "")
+    )

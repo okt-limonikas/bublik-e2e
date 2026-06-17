@@ -1,0 +1,271 @@
+"""Generate a fixture bundle, stamp metadata, and apply the result mix."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime, time, timedelta, timezone
+import math
+from pathlib import Path
+from typing import Any
+
+from core.common import CliError, read_json, write_json
+from core.constants import NOK_BORDERS, RESULT_TYPES, RUN_STATUS_BY_CONCLUSION
+from core.fixture_api import FixtureProvider
+from core.planning import MixValue, PlannedRun, parse_date, parse_mix_key
+from core.settings import DEFAULT_TIMEZONE
+
+
+@dataclass
+class FixtureSpec:
+    id: str
+    fixture_name: str
+    fixture_id: str
+    project: str
+    conclusion: str
+    mix_name: str
+    run_date: str
+    metas: dict[str, str] = field(default_factory=dict)
+    tags: dict[str, str] = field(default_factory=dict)
+
+
+def upsert_meta(
+    metas: list[dict[str, Any]], name: str, value: str, type_: str | None = None
+) -> None:
+    replacement = {"name": name, "value": value}
+    if type_:
+        replacement["type"] = type_
+    metas[:] = [meta for meta in metas if meta.get("name") != name]
+    metas.append(replacement)
+
+
+def get_meta_value(metas: list[dict[str, Any]], name: str) -> str | None:
+    for meta in metas:
+        if meta.get("name") == name:
+            value = meta.get("value")
+            return value if isinstance(value, str) else None
+    return None
+
+
+def iso_for_day(run_date: str, ordinal: int) -> str:
+    day = parse_date(run_date).date()
+    ts = datetime.combine(day, time(12, 0, 0), DEFAULT_TIMEZONE)
+    ts += timedelta(seconds=ordinal * 17, milliseconds=ordinal)
+    return ts.isoformat(timespec="milliseconds")
+
+
+def add_utc_timestamps(node: dict[str, Any], offset: timedelta) -> None:
+    for key in ("start_ts", "end_ts"):
+        value = node.get(key)
+        if not value or f"{key}_utc" in node:
+            continue
+        local = datetime.strptime(value, "%Y.%m.%d %H:%M:%S.%f")
+        node[f"{key}_utc"] = local.replace(tzinfo=timezone(offset)).timestamp()
+
+    for child in node.get("iters") or []:
+        add_utc_timestamps(child, offset)
+
+
+def patch_bundle(
+    output_dir: Path,
+    *,
+    spec: FixtureSpec,
+    pretty: bool,
+) -> None:
+    meta_path = output_dir / "meta_data.json"
+    bublik_path = output_dir / "bublik.json"
+    meta_data = read_json(meta_path)
+    bublik_data = read_json(bublik_path)
+
+    meta_items = meta_data.setdefault("metas", [])
+    start_timestamp = iso_for_day(spec.run_date, int(spec.tags.get("ordinal", "0")))
+    start_offset = datetime.fromisoformat(start_timestamp).utcoffset() or timedelta()
+    finish_timestamp = (
+        datetime.fromisoformat(start_timestamp) + timedelta(seconds=42)
+    ).isoformat(timespec="milliseconds")
+    upsert_meta(meta_items, "PROJECT", spec.project)
+    upsert_meta(meta_items, "RUN_STATUS", spec.metas.get("RUN_STATUS", "DONE"))
+    upsert_meta(meta_items, "E2E_RUN_ID", spec.fixture_id, "label")
+    upsert_meta(meta_items, "CFG", spec.id)
+    upsert_meta(meta_items, "START_TIMESTAMP", start_timestamp, "timestamp")
+    upsert_meta(meta_items, "FINISH_TIMESTAMP", finish_timestamp, "timestamp")
+    upsert_meta(meta_items, "CAMPAIGN_DATE", spec.run_date)
+    for key, value in spec.metas.items():
+        if key not in {"RUN_STATUS"}:
+            upsert_meta(meta_items, key, value)
+
+    bublik_tags = bublik_data.setdefault("tags", {})
+    bublik_tags.update(
+        {
+            "fixture_id": spec.fixture_id,
+            "fixture": spec.fixture_name,
+            "conclusion": spec.conclusion,
+            "mix": spec.mix_name,
+        }
+    )
+    bublik_tags.update(spec.tags)
+    for root in bublik_data.get("iters", []):
+        add_utc_timestamps(root, start_offset)
+
+    write_json(meta_path, meta_data, pretty)
+    write_json(bublik_path, bublik_data, pretty)
+
+
+def generate_bundle(
+    fixture: FixtureProvider,
+    spec: FixtureSpec,
+    output_dir: Path,
+    pretty: bool,
+) -> Path:
+    try:
+        fixture.generate(output_dir, pretty)
+    except Exception as exc:
+        raise CliError(f"fixture {fixture.name!r} generation failed: {exc}") from exc
+    for required in ("meta_data.json", "bublik.json"):
+        if not (output_dir / required).is_file():
+            raise CliError(f"fixture {fixture.name!r} did not create {required}")
+    patch_bundle(output_dir, spec=spec, pretty=pretty)
+    return output_dir
+
+
+def collect_leaf_tests(bublik: dict[str, Any]) -> list[dict[str, Any]]:
+    root = bublik["iters"][0]
+    leaves: list[dict[str, Any]] = []
+
+    def visit(node: dict[str, Any]) -> None:
+        children = node.get("iters") or []
+        if node.get("type") == "test" and not children:
+            leaves.append(node)
+        for child in children:
+            visit(child)
+
+    visit(root)
+    return leaves
+
+
+def leaf_tests(bundle_dir: Path) -> list[dict[str, Any]]:
+    return collect_leaf_tests(read_json(bundle_dir / "bublik.json"))
+
+
+def set_leaf_result(node: dict[str, Any], status: str, unexpected: bool) -> None:
+    expected_status = "PASSED" if unexpected else status
+    if unexpected and status == "PASSED":
+        expected_status = "FAILED"
+    node.setdefault("obtained", {}).setdefault("result", {})["status"] = status
+    result = node.setdefault("expected", {}).setdefault("results", [{}])
+    if not result:
+        result.append({})
+    result[0]["status"] = expected_status
+    if unexpected:
+        node["obtained"]["result"]["verdicts"] = ["Generated unexpected result"]
+        node["err"] = "Unexpected test result(s)"
+    else:
+        node["obtained"]["result"]["verdicts"] = []
+        node["err"] = ""
+
+
+def recompute_package_statuses(node: dict[str, Any]) -> str:
+    children = node.get("iters") or []
+    if not children:
+        return node.get("obtained", {}).get("result", {}).get("status", "INCOMPLETE")
+
+    child_statuses = [recompute_package_statuses(child) for child in children]
+    if any(
+        status in {"FAILED", "KILLED", "CORED", "FAKED", "INCOMPLETE"}
+        for status in child_statuses
+    ):
+        status = "FAILED"
+    elif child_statuses and all(status == "SKIPPED" for status in child_statuses):
+        status = "SKIPPED"
+    else:
+        status = "PASSED"
+
+    node.setdefault("obtained", {}).setdefault("result", {})["status"] = status
+    node["err"] = "" if status == "PASSED" else node.get("err", "")
+    return status
+
+
+def is_unexpected_leaf(node: dict[str, Any]) -> bool:
+    obtained = node.get("obtained", {}).get("result", {}).get("status", "INCOMPLETE")
+    expected_values = [
+        item.get("status")
+        for item in node.get("expected", {}).get("results", [])
+        if item.get("status")
+    ]
+    expected_status = expected_values[0] if expected_values else "PASSED"
+    return obtained != expected_status
+
+
+def apply_mix(
+    bundle_dir: Path, mix: list[MixValue], conclusion: str, pretty: bool
+) -> None:
+    bublik_path = bundle_dir / "bublik.json"
+    bublik = read_json(bublik_path)
+    leaves = collect_leaf_tests(bublik)
+    total = len(leaves)
+    if total == 0:
+        raise CliError(f"fixture {bundle_dir} has no leaf tests")
+
+    if conclusion == "ok" and not mix:
+        mix = []
+    if conclusion == "nok-warning" and not mix:
+        mix = [MixValue("unexpectedFailed", NOK_BORDERS[0] + 1, True)]
+    if conclusion == "nok-error" and not mix:
+        mix = [MixValue("unexpectedFailed", NOK_BORDERS[1], True)]
+
+    for leaf in leaves:
+        set_leaf_result(leaf, "PASSED", False)
+
+    index = 0
+    for item in mix:
+        prop, type_name = parse_mix_key(item.key)
+        count = (
+            math.ceil(total * item.value / 100)
+            if item.is_percent
+            else int(item.value)
+        )
+        if count < 0:
+            raise CliError(f"invalid negative count in mix {item.key}")
+        status = RESULT_TYPES[type_name]
+        unexpected = prop == "unexpected"
+        if prop == "notRun":
+            status = "INCOMPLETE" if type_name == "incomplete" else status
+        for _ in range(count):
+            if index >= total:
+                raise CliError(f"mix uses more results than fixture has: {bundle_dir}")
+            set_leaf_result(leaves[index], status, unexpected)
+            index += 1
+
+    for root in bublik.get("iters", []):
+        recompute_package_statuses(root)
+
+    unexpected_count = sum(1 for leaf in leaves if is_unexpected_leaf(leaf))
+    unexpected_percent = round(unexpected_count / total * 100) if total else 0
+    if conclusion == "nok-warning" and not (
+        NOK_BORDERS[0] < unexpected_percent < NOK_BORDERS[1]
+    ):
+        raise CliError(
+            f"nok-warning mix resolved to {unexpected_percent}% unexpected; "
+            f"expected between {NOK_BORDERS[0]} and {NOK_BORDERS[1]}"
+        )
+    if conclusion == "nok-error" and unexpected_percent < NOK_BORDERS[1]:
+        raise CliError(
+            f"nok-error mix resolved to {unexpected_percent}% unexpected; "
+            f"expected at least {NOK_BORDERS[1]}"
+        )
+
+    write_json(bublik_path, bublik, pretty)
+
+
+def spec_from_plan(plan: PlannedRun) -> FixtureSpec:
+    status = RUN_STATUS_BY_CONCLUSION[plan.conclusion]
+    return FixtureSpec(
+        id=plan.id,
+        fixture_name=plan.fixture.name,
+        fixture_id=f"{plan.fixture.fixture_id_prefix}:{plan.id}",
+        project=plan.fixture.project,
+        conclusion=plan.conclusion,
+        mix_name=plan.mix_name,
+        run_date=plan.run_date,
+        metas={"RUN_STATUS": status},
+        tags={"ordinal": str(plan.ordinal)},
+    )
