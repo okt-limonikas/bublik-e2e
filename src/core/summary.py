@@ -178,6 +178,74 @@ def build_run_table(
     return table
 
 
+def format_duration(seconds: float) -> str:
+    """Render an elapsed-seconds value as a compact human-readable string."""
+    total = max(0, round(seconds))
+    if total < 60:
+        return f"{total}s"
+    minutes, secs = divmod(total, 60)
+    if minutes < 60:
+        return f"{minutes}m {secs}s" if secs else f"{minutes}m"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h {minutes}m" if minutes else f"{hours}h"
+
+
+def build_timing_summary(
+    bundles: list[dict[str, Any]],
+    completed_at: dict[str, float],
+    start_ts: float,
+) -> Table | None:
+    """Build a per-fixture import-timing table.
+
+    Bublik imports runs sequentially, so each bundle's share of the wall clock is
+    the gap between its completion and the previous completion (the import start
+    for the first one). Those per-bundle gaps are summed per ``fixture`` type, and
+    the grand total is the elapsed time from import start to the last completion.
+    Returns ``None`` when no completion times were recorded.
+    """
+    timed = [b for b in bundles if b.get("id") in completed_at]
+    if not timed:
+        return None
+
+    per_fixture: dict[str, dict[str, float]] = {}
+    prev = start_ts
+    for bundle in sorted(timed, key=lambda b: completed_at[b["id"]]):
+        finished = completed_at[bundle["id"]]
+        fixture = str(bundle.get("fixture", "?"))
+        stats = per_fixture.setdefault(fixture, {"runs": 0, "seconds": 0.0})
+        stats["runs"] += 1
+        stats["seconds"] += max(0.0, finished - prev)
+        prev = finished
+
+    total_runs = sum(int(s["runs"]) for s in per_fixture.values())
+    total_seconds = max(0.0, max(completed_at[b["id"]] for b in timed) - start_ts)
+
+    table = Table(
+        title="Import timing",
+        box=ROUNDED,
+        header_style="bold",
+        title_style="bold",
+        expand=False,
+    )
+    table.add_column("FIXTURE", style="bold", no_wrap=True)
+    table.add_column("RUNS", justify="right")
+    table.add_column("TIME", justify="right")
+    for fixture, stats in sorted(
+        per_fixture.items(), key=lambda item: item[1]["seconds"], reverse=True
+    ):
+        table.add_row(
+            fixture, str(int(stats["runs"])), format_duration(stats["seconds"])
+        )
+    if len(per_fixture) > 1:
+        table.add_row(
+            "[bold]TOTAL[/]",
+            f"[bold]{total_runs}[/]",
+            f"[bold]{format_duration(total_seconds)}[/]",
+            end_section=True,
+        )
+    return table
+
+
 def render_run_summary(
     manifest: dict[str, Any], console: Console, *, title: str = "Runs"
 ) -> None:
