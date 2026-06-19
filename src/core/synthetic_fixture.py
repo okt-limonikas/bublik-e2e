@@ -24,6 +24,10 @@ class TestFamily:
     requirements: tuple[str, ...] = ()
     artifacts: tuple[str, ...] = ()
     measurements: tuple[dict[str, Any], ...] = ()
+    # Per-iteration requirements, aligned by index with ``parameters``. When set,
+    # it overrides ``requirements`` so each leaf can carry the exact requirement
+    # list of its real-world iteration. Empty means "use ``requirements`` for all".
+    iteration_requirements: tuple[tuple[str, ...], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -39,6 +43,41 @@ class RunProfile:
     kind: str
     metas: dict[str, str]
     tags: dict[str, str | None]
+
+
+# ---------------------------------------------------------------------------
+# Data-driven family builders. Fixtures keep authoring objectives inline but
+# source the exact per-iteration ``params``/``reqs`` from a generated ``REAL``
+# mapping (``{test_name: [{"params": {...}, "reqs": [...]}, ...]}``) produced by
+# ``tools/gen_real_data.py`` from real Bublik runs.
+# ---------------------------------------------------------------------------
+
+# Mapping of test name -> list of iterations, each ``{"params": ..., "reqs": ...}``.
+RealData = dict[str, list[dict[str, Any]]]
+
+
+def real_family(real: RealData, name: str, objective: str) -> TestFamily:
+    """Build one TestFamily for ``name`` from its real iterations.
+
+    Each real iteration becomes a leaf carrying that iteration's exact ``params``
+    and ``reqs``. Names absent from ``real`` fall back to a single param-less leaf.
+    """
+    iterations = real.get(name)
+    if not iterations:
+        return TestFamily(name, objective)
+    return TestFamily(
+        name,
+        objective,
+        parameters=tuple(dict(it["params"]) for it in iterations),
+        iteration_requirements=tuple(tuple(it.get("reqs", ())) for it in iterations),
+    )
+
+
+def real_families(real: RealData, objectives: dict[str, str]) -> tuple[TestFamily, ...]:
+    """Build a TestFamily per ``name -> objective`` mapping, preserving order."""
+    return tuple(
+        real_family(real, name, objective) for name, objective in objectives.items()
+    )
 
 
 def _node_status(node: dict[str, Any]) -> str:
@@ -305,6 +344,11 @@ class SyntheticFixture(BaseFixture):
             elapsed += 1
             path = [self.name, package_name, family.name]
             identity = json.dumps([path, parameters, tin], sort_keys=True)
+            reqs = (
+                family.iteration_requirements[tin]
+                if family.iteration_requirements
+                else family.requirements
+            )
 
             result: dict[str, Any] = {
                 "status": "PASSED",
@@ -321,7 +365,7 @@ class SyntheticFixture(BaseFixture):
                 "test_id": test_id,
                 "plan_id": test_id,
                 "tin": tin,
-                "reqs": list(family.requirements),
+                "reqs": list(reqs),
                 "objective": family.objective,
                 "params": parameters,
                 "path": path,
