@@ -203,22 +203,25 @@ def build_timing_summary(
     the grand total is the elapsed time from import start to the last completion.
     Returns ``None`` when no completion times were recorded.
     """
-    timed = [b for b in bundles if b.get("id") in completed_at]
+    timed = sorted(
+        (b for b in bundles if b.get("id") in completed_at),
+        key=lambda b: completed_at[b["id"]],
+    )
     if not timed:
         return None
 
-    per_fixture: dict[str, dict[str, float]] = {}
+    # Single pass over the completion-ordered bundles: ``prev`` ends at the last
+    # completion, so the grand total is just ``prev - start_ts``.
+    runs: dict[str, int] = {}
+    seconds: dict[str, float] = {}
     prev = start_ts
-    for bundle in sorted(timed, key=lambda b: completed_at[b["id"]]):
+    for bundle in timed:
         finished = completed_at[bundle["id"]]
         fixture = str(bundle.get("fixture", "?"))
-        stats = per_fixture.setdefault(fixture, {"runs": 0, "seconds": 0.0})
-        stats["runs"] += 1
-        stats["seconds"] += max(0.0, finished - prev)
+        runs[fixture] = runs.get(fixture, 0) + 1
+        seconds[fixture] = seconds.get(fixture, 0.0) + max(0.0, finished - prev)
         prev = finished
-
-    total_runs = sum(int(s["runs"]) for s in per_fixture.values())
-    total_seconds = max(0.0, max(completed_at[b["id"]] for b in timed) - start_ts)
+    total_seconds = max(0.0, prev - start_ts)
 
     table = Table(
         title="Import timing",
@@ -230,16 +233,12 @@ def build_timing_summary(
     table.add_column("FIXTURE", style="bold", no_wrap=True)
     table.add_column("RUNS", justify="right")
     table.add_column("TIME", justify="right")
-    for fixture, stats in sorted(
-        per_fixture.items(), key=lambda item: item[1]["seconds"], reverse=True
-    ):
-        table.add_row(
-            fixture, str(int(stats["runs"])), format_duration(stats["seconds"])
-        )
-    if len(per_fixture) > 1:
+    for fixture, secs in sorted(seconds.items(), key=lambda item: item[1], reverse=True):
+        table.add_row(fixture, str(runs[fixture]), format_duration(secs))
+    if len(seconds) > 1:
         table.add_row(
             "[bold]TOTAL[/]",
-            f"[bold]{total_runs}[/]",
+            f"[bold]{len(timed)}[/]",
             f"[bold]{format_duration(total_seconds)}[/]",
             end_section=True,
         )

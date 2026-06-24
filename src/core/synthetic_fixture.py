@@ -276,6 +276,7 @@ class SyntheticFixture(BaseFixture):
         revision_url: str,
         packages: tuple[Package, ...],
         tags: dict[str, str | None],
+        tests: tuple[TestFamily, ...] = (),
         profiles: tuple[RunProfile, ...] = (),
         root_objective: str | None = None,
         report_configs: tuple[dict[str, Any], ...] = (),
@@ -285,6 +286,9 @@ class SyntheticFixture(BaseFixture):
         self.revision_meta = revision_meta
         self.revision_url = revision_url
         self.packages = packages
+        # Leaf tests emitted directly under the run root (e.g. a top-level
+        # ``prologue``), matching real suites that log these as tests, not packages.
+        self.tests = tests
         self.tags = tags
         self.profiles = profiles
         self.root_objective = root_objective
@@ -330,7 +334,7 @@ class SyntheticFixture(BaseFixture):
             )
 
         def make_leaf(
-            package_name: str,
+            path_prefix: list[str],
             family: TestFamily,
             parameters: dict[str, str],
             tin: int,
@@ -342,7 +346,7 @@ class SyntheticFixture(BaseFixture):
             elapsed += 2
             end_text, end_utc = timestamp(elapsed)
             elapsed += 1
-            path = [self.name, package_name, family.name]
+            path = [*path_prefix, family.name]
             identity = json.dumps([path, parameters, tin], sort_keys=True)
             reqs = (
                 family.iteration_requirements[tin]
@@ -377,10 +381,18 @@ class SyntheticFixture(BaseFixture):
                 "measurements": list(family.measurements),
             }
 
+        # Root-level leaf tests run first (e.g. a top-level prologue), so build them
+        # before the packages to keep the synthetic timeline in execution order.
+        root_test_nodes = [
+            make_leaf([self.name], family, parameters, tin)
+            for family in self.tests
+            for tin, parameters in enumerate(family.parameters)
+        ]
+
         package_nodes: list[dict[str, Any]] = []
         for package in self.packages:
             children = [
-                make_leaf(package.name, family, parameters, tin)
+                make_leaf([self.name, package.name], family, parameters, tin)
                 for family in package.tests
                 for tin, parameters in enumerate(family.parameters)
             ]
@@ -416,10 +428,11 @@ class SyntheticFixture(BaseFixture):
                 }
             )
 
+        child_nodes = root_test_nodes + package_nodes
         root = {
-            "iters": package_nodes,
-            "start_ts": package_nodes[0]["start_ts"],
-            "start_ts_utc": package_nodes[0]["start_ts_utc"],
+            "iters": child_nodes,
+            "start_ts": child_nodes[0]["start_ts"],
+            "start_ts_utc": child_nodes[0]["start_ts_utc"],
             "name": self.name,
             "type": "pkg",
             "hash": hashlib.md5(self.name.encode(), usedforsecurity=False).hexdigest(),
@@ -432,8 +445,8 @@ class SyntheticFixture(BaseFixture):
             "params": {},
             "path": [self.name],
             "path_str": self.name,
-            "end_ts": package_nodes[-1]["end_ts"],
-            "end_ts_utc": package_nodes[-1]["end_ts_utc"],
+            "end_ts": child_nodes[-1]["end_ts"],
+            "end_ts_utc": child_nodes[-1]["end_ts_utc"],
             "err": "",
             "obtained": {"result": {"status": "PASSED"}},
         }
