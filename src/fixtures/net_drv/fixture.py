@@ -114,12 +114,8 @@ fixture = SyntheticFixture(
         "max_tx_queues": "2",
     },
     profiles=profiles,
+    tests=(one("prologue", "Initialize the network test rig."),),
     packages=(
-        Package(
-            name="prologue",
-            objective="Prepare Linux interfaces and test agents.",
-            tests=(one("prologue", "Initialize the network test rig."),),
-        ),
         Package(
             name="basic",
             objective="Validate fundamental Linux network driver operations.",

@@ -559,12 +559,8 @@ fixture = SyntheticFixture(
         "max_tx_queues": "2",
     },
     profiles=profiles,
+    tests=(real_family(REAL, "prologue", "Prepare the DPDK test environment."),),
     packages=(
-        Package(
-            name="prologue",
-            objective="Prepare the DPDK test environment.",
-            tests=(real_family(REAL, "prologue", ""),),
-        ),
         Package(
             name="usecases",
             objective="Main use cases of the PMD",
