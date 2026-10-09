@@ -21,7 +21,7 @@ from rich.table import Table
 
 from core.classification import build_classification
 from core.common import CliError, console
-from core.discovery import selected_fixtures
+from core.discovery import known_fixture_names, selected_fixtures
 from core.importer import generate_and_import, import_manifest
 from core.manifest import generate_manifest
 from core.manifest_models import manifest_json_schema
@@ -460,7 +460,7 @@ def plan(
         fixtures = selected_fixtures(args)
         mixes = build_mixes(args)
         planned, empty_dates = build_plan(args, fixtures, mixes)
-        build_classification(classification)
+        build_classification(classification, known_fixture_names(fixtures))
         project_trackers(fixtures, trackers)
     except CliError as exc:
         console.print(f"[bold red]error:[/] {exc}", soft_wrap=True)
