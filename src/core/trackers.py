@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from core.common import CliError
+from core.discovery import discover_fixtures
 
 #: What every project got before trackers were configurable, and what a fixture
 #: the plan says nothing about still gets.
@@ -29,16 +30,21 @@ def project_trackers(
     """One entry per project the fixtures land in, sorted by project name.
 
     ``spec`` maps a fixture name to its trackers; a fixture absent from it gets
-    :data:`DEFAULT_TRACKERS`. Fixtures that share a project must agree, since
-    the project has one references config.
+    :data:`DEFAULT_TRACKERS`. Trackers for a bundled fixture left out of the
+    selection (``--fixture``) are ignored; for any other name they are an
+    error. Fixtures that share a project must agree, since the project has one
+    references config.
     """
-    unknown = sorted(set(spec) - set(fixtures))
-    if unknown:
-        raise CliError(
-            "trackers declared for unknown fixture(s): "
-            + ", ".join(f"fixtures.{name}" for name in unknown)
-            + f"; known fixtures: {', '.join(sorted(fixtures))}"
-        )
+    unselected = set(spec) - set(fixtures)
+    if unselected:
+        known = set(fixtures) | set(discover_fixtures())
+        unknown = sorted(unselected - known)
+        if unknown:
+            raise CliError(
+                "trackers declared for unknown fixture(s): "
+                + ", ".join(f"fixtures.{name}" for name in unknown)
+                + f"; known fixtures: {', '.join(sorted(known))}"
+            )
 
     members: dict[str, list[str]] = {}
     for name, fixture in fixtures.items():

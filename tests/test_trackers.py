@@ -134,6 +134,17 @@ def test_trackers_for_an_unknown_fixture_are_rejected() -> None:
         project_trackers(FIXTURES, {"nope": []})
 
 
+def test_trackers_for_a_known_but_unselected_fixture_are_ignored() -> None:
+    # `--fixture basic` with a plan that also configures net-drv-ts.
+    selected = {"basic": FIXTURES["basic"]}
+
+    assert project_trackers(selected, {"net-drv-ts": [NET], "basic": [NET]}) == [
+        {"name": "bublik-e2e", "fixtures": ["basic"], "trackers": [NET]},
+    ]
+    with pytest.raises(CliError, match="fixtures.nope"):
+        project_trackers(selected, {"net-drv-ts": [NET], "nope": []})
+
+
 def test_fixtures_sharing_a_project_must_agree_on_trackers() -> None:
     fixtures = {**FIXTURES, "basic-two": _fixture("basic-two", "bublik-e2e")}
 
