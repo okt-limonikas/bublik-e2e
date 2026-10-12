@@ -44,10 +44,10 @@
 2026-04-21 12:00:00,070:[INFO    ][runner      ]  MI: RESULT status=PASSED expected=PASSED
 2026-04-21 12:00:00,071:[INFO    ][runner      ]  MI: ITERATION_END name=identify_basic tin=0 status=PASSED
 2026-04-21 12:00:00,072:[INFO    ][runner      ]  MI: ITERATION_START name=identify_basic tin=1
-2026-04-21 12:00:00,073:[INFO    ][runner      ]  MI: ITERATION_PARAM key=namespace value=1
+2026-04-21 12:00:00,073:[INFO    ][runner      ]  MI: ITERATION_PARAM key=namespace value=2
 2026-04-21 12:00:00,074:[INFO    ][runner      ]  MI: ITERATION_OBJECTIVE text="Repeat identify collection after a short delay."
 2026-04-21 12:00:00,075:[INFO    ][runner      ]  MI: STEP text="Read namespace identify data"
-2026-04-21 12:00:00,076:[INFO    ][nvmecli     ]  nvme id-ns /dev/nvme0n1
+2026-04-21 12:00:00,076:[INFO    ][nvmecli     ]  nvme id-ns /dev/nvme0n2
 2026-04-21 12:00:00,076:[INFO    ][nvmecli     ]  nsze 7814037168
 2026-04-21 12:00:00,077:[INFO    ][nvmecli     ]  ncap 7814037168
 2026-04-21 12:00:00,077:[INFO    ][runner      ]  MI: RESULT status=PASSED expected=FAILED
