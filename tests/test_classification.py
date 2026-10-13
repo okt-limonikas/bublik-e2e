@@ -692,10 +692,12 @@ def test_apply_classification_is_idempotent(
     manifest, path = _classify_manifest(tmp_path)
     manifest["classification"]["issues"][0]["issueId"] = 3
     manifest["classification"]["rules"][0]["ruleId"] = 9
+    manifest["bundles"][0]["rulesApplied"] = True
 
     apply_classification(manifest, path, "http://host", Path("jar"), fetch)
 
     assert not [c for c in calls if c[1].endswith("/classify/")]
+    assert not [c for c in calls if c[1].endswith("/apply_rules/")]
     assert "already applied" in capsys.readouterr().err
 
 
@@ -1113,6 +1115,8 @@ class _Instance:
             updated = [key for key in ids if key not in self.moved]
             self.moved.update(updated)
             return {"requested": len(ids), "updated": len(updated)}
+        if url.endswith("/apply_rules/"):
+            return {"stamps_created": 5}
         return {}
 
     def posts(self) -> list[tuple[str, object]]:
@@ -1159,6 +1163,9 @@ def test_setup_creates_then_deactivates_then_closes(tmp_path: Path) -> None:
         ("/api/v2/results/42/classify/", ANY),
         ("/api/v2/issue_rules/deactivate/", {"ids": [9]}),
         ("/api/v2/issues/close/", {"ids": [11]}),
+        # Last: the endpoint applies only active rules of open issues and never
+        # unstamps, so it has to see the deactivations and closes first.
+        ("/api/v2/runs/7/apply_rules/", {}),
     ]
 
 
@@ -1178,6 +1185,114 @@ def test_a_re_run_creates_nothing(
     rerun = [url for _, url, _ in instance.calls[first:]]
     assert rerun == ["/api/v2/issue_rules/deactivate/"]
     assert "already applied" in capsys.readouterr().err
+
+
+# --------------------------------------------------------------------------
+# Re-applying the rules to the runs seeded before they existed
+# --------------------------------------------------------------------------
+
+
+def _applied(instance: _Instance) -> list[str]:
+    return [url for _, url, _ in instance.calls if url.endswith("/apply_rules/")]
+
+
+def test_rules_are_reapplied_to_every_pinned_api_run(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Classifying stamps one result; the seeded runs get the rest here."""
+    from core.classify_api import apply_classification
+
+    manifest, path = _classify_manifest(tmp_path)
+    pinned = manifest["bundles"][0]["pinnedResults"]
+    manifest["bundles"].append(
+        {"id": "later", "importVia": "api", "runId": 8, "pinnedResults": pinned}
+    )
+    instance = _Instance()
+    apply_classification(manifest, path, "http://host", Path("jar"), instance)
+
+    assert _applied(instance) == [
+        "/api/v2/runs/7/apply_rules/",
+        "/api/v2/runs/8/apply_rules/",
+    ]
+    assert all(bundle["rulesApplied"] for bundle in read_json(path)["bundles"])
+    # The console wraps long lines, so compare on collapsed whitespace.
+    summary = " ".join(capsys.readouterr().err.split())
+    assert "applied rules to 2 runs (10 stamps)" in summary
+
+
+def test_ui_unimported_and_unpinned_bundles_are_not_reapplied(tmp_path: Path) -> None:
+    """A +ui run was stamped on import; a pin-less run has nothing authored."""
+    from core.classify_api import apply_classification
+
+    manifest, path = _classify_manifest(tmp_path)
+    pinned = manifest["bundles"][0]["pinnedResults"]
+    manifest["bundles"] += [
+        {"id": "twin", "importVia": "ui", "runId": 8, "pinnedResults": pinned},
+        {"id": "pending", "importVia": "api", "runId": None, "pinnedResults": pinned},
+        {"id": "plain", "importVia": "api", "runId": 9, "pinnedResults": []},
+    ]
+    instance = _Instance()
+    apply_classification(manifest, path, "http://host", Path("jar"), instance)
+
+    assert _applied(instance) == ["/api/v2/runs/7/apply_rules/"]
+    marked = [b["id"] for b in read_json(path)["bundles"] if b.get("rulesApplied")]
+    assert marked == ["seed"]
+
+
+def test_a_marked_run_is_skipped_until_a_rule_is_created(tmp_path: Path) -> None:
+    """The mark saves round trips; a new rule must still reach the old runs."""
+    from core.classify_api import apply_classification
+
+    manifest, path = _classify_manifest(tmp_path)
+    manifest["bundles"][0]["rulesApplied"] = True
+    manifest["classification"]["issues"][0]["issueId"] = 3
+    manifest["classification"]["rules"][0]["ruleId"] = 9
+    instance = _Instance()
+    apply_classification(manifest, path, "http://host", Path("jar"), instance)
+    assert _applied(instance) == []
+
+    # A second rule appears in the plan: the mark is cleared and the run is
+    # stamped again, which only adds what the new rule matches.
+    manifest = read_json(path)
+    manifest["classification"]["rules"].append(
+        {
+            "id": "r2",
+            "issue": "known",
+            "pin": "rx",
+            "category": "flaky",
+            "expected": True,
+            "scope": "future",
+            "match": ["verdicts"],
+            "ruleId": None,
+        }
+    )
+    instance = _Instance()
+    apply_classification(manifest, path, "http://host", Path("jar"), instance)
+    assert _applied(instance) == ["/api/v2/runs/7/apply_rules/"]
+
+
+def test_a_failure_while_reapplying_keeps_the_runs_already_done(tmp_path: Path) -> None:
+    from core.classify_api import apply_classification
+
+    manifest, path = _classify_manifest(tmp_path)
+    pinned = manifest["bundles"][0]["pinnedResults"]
+    manifest["bundles"].append(
+        {"id": "later", "importVia": "api", "runId": 8, "pinnedResults": pinned}
+    )
+
+    class Flaky(_Instance):
+        def __call__(self, url: str, **kwargs: object) -> object:
+            if url.endswith("/runs/8/apply_rules/"):
+                raise CliError("boom")
+            return super().__call__(url, **kwargs)
+
+    with pytest.raises(CliError, match="boom"):
+        apply_classification(manifest, path, "http://host", Path("jar"), Flaky())
+
+    written = {
+        b["id"]: b.get("rulesApplied", False) for b in read_json(path)["bundles"]
+    }
+    assert written == {"seed": True, "later": False}
 
 
 def test_a_rule_less_issue_in_an_unimported_fixture_is_named(tmp_path: Path) -> None:
@@ -1219,7 +1334,10 @@ def test_a_manifest_from_before_both_fields_still_validates_and_applies(
     instance = _Instance()
     apply_classification(manifest, path, "http://host", Path("jar"), instance)
 
-    assert [url for url, _ in instance.posts()] == ["/api/v2/results/42/classify/"]
+    assert [url for url, _ in instance.posts()] == [
+        "/api/v2/results/42/classify/",
+        "/api/v2/runs/7/apply_rules/",
+    ]
 
 
 def test_an_older_rule_less_issue_without_a_fixture_is_named(tmp_path: Path) -> None:

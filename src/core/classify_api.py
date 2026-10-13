@@ -11,6 +11,14 @@ itself calls — rather than by POSTing to ``/issue_rules/`` directly. That way 
 fixture exercises the real triage path, and the backend resolves the test and
 captures the matcher from the result, so this module never has to look up a test
 id or reconstruct a parameter dict.
+
+Classifying stamps a single result, and Bublik otherwise applies rules only on
+import, so the API-seeded runs -- imported before any rule existed -- would carry
+one stamp per rule and nothing else. The last stage therefore re-applies the
+rules to every API-seeded run that carries pins, through
+``POST /runs/{id}/apply_rules/`` (the UI's "Apply rules" button). That is what
+gives an issue a realistic number of results across runs and days; the ``+ui``
+run remains the proof that import-time stamping works on its own.
 """
 
 from __future__ import annotations
@@ -352,6 +360,11 @@ def apply_classification(
         closed = int(summary.get("updated") or 0)
 
     write_json(manifest_path, manifest, True)
+
+    applied_runs, stamps = apply_rules_to_seeded_runs(
+        manifest, manifest_path, base_url, cookie_jar, fetch, bool(created_rules)
+    )
+
     parts = []
     if created_issues:
         parts.append(f"created {created_issues} issues")
@@ -361,6 +374,75 @@ def apply_classification(
         parts.append(f"deactivated {deactivated} rules")
     if closed:
         parts.append(f"closed {closed}")
+    if applied_runs:
+        parts.append(f"applied rules to {applied_runs} runs ({stamps} stamps)")
     if not parts:
         parts.append("classification already applied")
     console.print(f"[green]✓[/] {'; '.join(parts)}")
+
+
+def _pinned_api_bundles(manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    """The imported API bundles that carry pinned results.
+
+    ``importVia`` is checked explicitly rather than inferred from ``runId``: a
+    ``+ui`` bundle gets a ``runId`` too, once the Playwright suite has imported
+    it, and that run was stamped on import -- re-applying would add nothing and
+    would muddle the import-origin assertion the suite makes against it.
+
+    A run without pins is left alone on purpose. Its results were never authored
+    for a rule, and the suite reads exact unexpected counts off such runs; a
+    test-only or parameters rule stamping one of them would suppress a result
+    and shift the count.
+    """
+    return [
+        bundle
+        for bundle in manifest.get("bundles", [])
+        if bundle.get("importVia", "api") == "api"
+        and bundle.get("runId")
+        and bundle.get("pinnedResults")
+    ]
+
+
+def apply_rules_to_seeded_runs(
+    manifest: dict[str, Any],
+    manifest_path: Path,
+    base_url: str,
+    cookie_jar: Path,
+    fetch: Any,
+    rules_changed: bool,
+) -> tuple[int, int]:
+    """Re-apply the active rules to every pinned API-seeded run.
+
+    Runs last, after deactivation and closing: the endpoint applies only the
+    active rules of open issues, and the stamps it lays are never removed, so
+    running it any earlier would stamp results for rules the plan then switches
+    off.
+
+    Returns ``(runs applied to, stamps created)``. Each bundle records
+    ``rulesApplied`` once its call succeeds, written per bundle so a failure
+    partway through resumes where it stopped. ``rules_changed`` clears those
+    marks first, so a rule created on this invocation reaches runs that were
+    already stamped on an earlier one. The endpoint itself only adds missing
+    stamps, so the mark saves round trips rather than guarding correctness.
+    """
+    bundles = _pinned_api_bundles(manifest)
+    if rules_changed:
+        for bundle in bundles:
+            bundle.pop("rulesApplied", None)
+
+    applied = 0
+    stamps = 0
+    for bundle in bundles:
+        if bundle.get("rulesApplied"):
+            continue
+        summary = fetch(
+            f"{base_url}/api/v2/runs/{int(bundle['runId'])}/apply_rules/",
+            method="POST",
+            payload={},
+            cookie_jar=cookie_jar,
+        )
+        stamps += int((summary or {}).get("stamps_created") or 0)
+        bundle["rulesApplied"] = True
+        applied += 1
+        write_json(manifest_path, manifest, True)
+    return applied, stamps

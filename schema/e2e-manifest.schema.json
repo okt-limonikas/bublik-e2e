@@ -90,6 +90,10 @@
           },
           "type": "array"
         },
+        "rulesApplied": {
+          "default": false,
+          "type": "boolean"
+        },
         "runId": {
           "anyOf": [
             {

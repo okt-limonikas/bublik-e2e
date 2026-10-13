@@ -235,6 +235,10 @@ class Bundle(_Model):
     runId: int | None = None
     runUrl: str | None = None
     logUrl: str | None = None
+    #: Set by ``--setup-classification`` once the plan's active rules have been
+    #: re-applied to this run (``POST /runs/{id}/apply_rules/``). Only pinned
+    #: API-imported bundles are ever marked.
+    rulesApplied: bool = False
 
 
 class ReportConfig(_Model):

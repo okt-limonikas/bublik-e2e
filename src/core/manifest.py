@@ -459,6 +459,7 @@ def generate_manifest(args: argparse.Namespace, *, show_summary: bool = True) ->
                     "importUrl": import_url,
                     "importVia": plan.import_via,
                     "pinnedResults": pin_records,
+                    "rulesApplied": False,
                     "project": spec.project,
                     "e2eRunId": spec.fixture_id,
                     "runStatus": get_meta_value(metas, "RUN_STATUS"),

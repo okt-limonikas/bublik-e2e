@@ -356,8 +356,15 @@ The ordering the flag creates is what makes the assertion meaningful:
 |-------|--------------|
 | 1 | API-imported bundles are seeded. Their pinned leaves fail with authored verdicts. |
 | 2 | `--setup-classification` classifies one result per rule via `POST /results/{id}/classify/`. |
-| 3 | The Playwright suite imports the `+ui` bundles — runs generated before any rule existed. |
-| 4 | Bublik stamps them on import; the suite asserts the stamps. |
+| 3 | `--setup-classification` re-applies the active rules to every API-seeded run that carries pins, via `POST /runs/{id}/apply_rules/`, so those runs carry every stamp a rule matches and not just the one classified result. |
+| 4 | The Playwright suite imports the `+ui` bundles — runs generated before any rule existed. |
+| 5 | Bublik stamps them on import; the suite asserts the stamps. |
+
+Stage 3 is what gives an issue realistic volume: with a pin on all sixteen
+`send_receive` iterations and six seeded nok-warning runs, a verdict rule over it
+matches about a hundred results across runs and days. Each bundle records
+`rulesApplied` once it has been through that stage; a run without pins is never
+re-applied, since nothing in it was authored for a rule.
 
 The manifest records both halves. Each pin lists `seededIn` (the runs a rule can
 be written against) and `appliesTo` (the runs it should reach), each bundle
@@ -427,9 +434,14 @@ under an issue with `close: true`, whose close deactivates every rule anyway.
 The manifest records `active` on every rule.
 
 `--setup-classification` works in this order: rule-less issues, then rules,
-then deactivation, then closing. Re-running it creates nothing; deactivation and
+then deactivation, then closing, then re-applying the rules to the pinned
+API-seeded runs. The last step has to come last: the endpoint applies only the
+active rules of open issues and never removes a stamp, so it must see the
+deactivations and closes first. Re-running it creates nothing; deactivation and
 closing are collection actions, so a re-run sends the same ids and the backend
-reports them unchanged.
+reports them unchanged, and a run marked `rulesApplied` is skipped unless the
+re-run created a rule, in which case every pinned run is applied again so the
+new rule reaches it too.
 
 ## Live import simulation
 
