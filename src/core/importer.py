@@ -254,8 +254,13 @@ def reconcile_run_ids(
         )
 
 
-def schedule_import(base_url: str, import_url: str, cookie_jar: Path) -> int:
-    query = urllib.parse.urlencode({"url": import_url})
+def schedule_import(
+    base_url: str, import_url: str, cookie_jar: Path, project_id: int | None = None
+) -> int:
+    params: dict[str, Any] = {"url": import_url}
+    if project_id is not None:
+        params["project"] = project_id
+    query = urllib.parse.urlencode(params)
     response = curl_json(
         f"{base_url}/api/v2/importruns/source/?{query}", cookie_jar=cookie_jar
     )
@@ -462,35 +467,9 @@ def upsert_config(
     )
 
 
-def ensure_api_projects(
-    manifest: dict[str, Any], base_url: str, cookie_jar: Path
-) -> None:
-    projects = curl_json(f"{base_url}/api/v2/projects/", cookie_jar=cookie_jar)
-    projects_by_name = {project["name"]: project for project in projects}
-    project_names = sorted({bundle["project"] for bundle in manifest["bundles"]})
-    # A manifest from before trackers were configurable has no "projects";
-    # every project then gets the default trackers, as it always did.
-    trackers_by_project = {
-        project["name"]: project["trackers"] for project in manifest.get("projects", [])
-    }
-    configs_by_project: dict[str, list[dict[str, Any]]] = {}
-    for config in manifest.get("configs", []):
-        configs_by_project.setdefault(config["project"], []).append(config)
-    references = {
-        "REVISIONS": {
-            "TE_REV": {
-                "uri": "https://github.com/ts-factory/test-environment",
-                "name": "Test Environment",
-            }
-        },
-        "LOGS_BASES": [
-            {
-                "uri": [f"{base_url}/logs/"],
-                "name": "Local Logs Base",
-            }
-        ],
-    }
-    meta = {
+def meta_config() -> dict[str, Any]:
+    """The ``meta`` config: which metas the UI shows as which category."""
+    return {
         "Lab": {
             "type": "label",
             "set-patterns": ["fixture"],
@@ -543,7 +522,11 @@ def ensure_api_projects(
             "set-patterns": ["CFG"],
         },
     }
-    per_conf = {
+
+
+def per_conf_config() -> dict[str, Any]:
+    """The ``per_conf`` config every e2e project gets."""
+    return {
         "EMAIL_FROM": "noreply@ts-factory.io",
         "EMAIL_HOST": "localhost",
         "EMAIL_PORT": 25,
@@ -576,6 +559,38 @@ def ensure_api_projects(
         "NOT_PERMISSION_REQUIRED_ACTIONS": [],
     }
 
+
+def ensure_api_projects(
+    manifest: dict[str, Any], base_url: str, cookie_jar: Path
+) -> None:
+    projects = curl_json(f"{base_url}/api/v2/projects/", cookie_jar=cookie_jar)
+    projects_by_name = {project["name"]: project for project in projects}
+    project_names = sorted({bundle["project"] for bundle in manifest["bundles"]})
+    # A manifest from before trackers were configurable has no "projects";
+    # every project then gets the default trackers, as it always did.
+    trackers_by_project = {
+        project["name"]: project["trackers"] for project in manifest.get("projects", [])
+    }
+    configs_by_project: dict[str, list[dict[str, Any]]] = {}
+    for config in manifest.get("configs", []):
+        configs_by_project.setdefault(config["project"], []).append(config)
+    references = {
+        "REVISIONS": {
+            "TE_REV": {
+                "uri": "https://github.com/ts-factory/test-environment",
+                "name": "Test Environment",
+            }
+        },
+        "LOGS_BASES": [
+            {
+                "uri": [f"{base_url}/logs/"],
+                "name": "Local Logs Base",
+            }
+        ],
+    }
+
+    meta = meta_config()
+    per_conf = per_conf_config()
     existing_configs = curl_json(f"{base_url}/api/v2/config/", cookie_jar=cookie_jar)
 
     for project_name in project_names:
