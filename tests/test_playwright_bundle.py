@@ -146,19 +146,13 @@ def test_a_title_longer_than_bublik_keeps_is_cut_short_and_stays_unique() -> Non
     specs = report["suites"][0]["specs"]
     specs[0]["title"], specs[1]["title"] = long + "one", long + "two"
 
-    names = [n for n in walk(convert(report, facts()).root)]
+    names = list(walk(convert(report, facts()).root))
 
     shortened = [n for n in names if n["objective"].startswith("Scenario:")]
     assert len(shortened) == 2
     assert all(len(n["name"]) <= 64 for n in names)
     assert shortened[0]["name"] != shortened[1]["name"]
     assert {n["objective"] for n in shortened} == {long + "one", long + "two"}
-
-
-def walk(node: dict[str, Any]) -> Iterator[dict[str, Any]]:
-    yield node
-    for child in node["iters"]:
-        yield from walk(child)
 
 
 def test_hashes_are_stable_and_differ_per_browser() -> None:
