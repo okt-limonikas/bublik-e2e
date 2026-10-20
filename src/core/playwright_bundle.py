@@ -589,7 +589,11 @@ def metas(conversion: Conversion, facts: Facts) -> list[dict[str, str]]:
         {"name": "PROJECT", "value": facts.project},
         {"name": "TS_NAME", "value": facts.ts_name},
         {"name": "CFG", "value": conversion.browser},
-        {"name": "START_TIMESTAMP", "value": start.isoformat(timespec="milliseconds")},
+        {
+            "name": "START_TIMESTAMP",
+            "value": start.isoformat(timespec="milliseconds"),
+            "type": "timestamp",
+        },
         {
             "name": "FINISH_TIMESTAMP",
             "value": finish.isoformat(timespec="milliseconds"),
