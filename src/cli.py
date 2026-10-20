@@ -25,10 +25,12 @@ from core.classification import build_classification
 from core.common import CliError, console
 from core.playwright_bundle import (
     SCHEMA_DIR,
+    LiveInfo,
     facts_from_env,
     revisions,
     write_bundle,
 )
+from core.playwright_live import LiveStream, run_live, write_reporter
 from core.settings import Settings
 from core.discovery import known_fixture_names, selected_fixtures
 from core.importer import generate_and_import, import_manifest
@@ -713,9 +715,20 @@ def playwright(
     no_validate: Annotated[
         bool, typer.Option("--no-validate", help="Skip schema validation.")
     ] = False,
+    live: Annotated[
+        Optional[Path],
+        typer.Option(
+            help="The file 'playwright-live --out' wrote: the bundle reuses the "
+            "live run's key metas and numbering, so its import merges into it. "
+            "A missing file, or one with no live run, imports afresh."
+        ),
+    ] = None,
 ) -> None:
     """Turn a Playwright JSON report into a Bublik run bundle, and import it."""
     try:
+        live_info = LiveInfo.load(live) if live is not None and live.exists() else None
+        if live_info is not None:
+            console.print(f"merging into live run {live_info.run}", soft_wrap=True)
         facts = facts_from_env(os.environ, facts_env)
         facts.project = project
         facts.ts_name = ts_name
@@ -737,6 +750,7 @@ def playwright(
             publish_dir / bundle_id,
             attachments_dir=attachments_dir,
             schemas=None if no_validate else (schemas or SCHEMA_DIR),
+            live=live_info,
         )
         console.print(
             f"[green]✓[/] bundle {written.path}: {written.tests} tests, "
@@ -766,6 +780,111 @@ def playwright(
     except CliError as exc:
         console.print(f"[bold red]error:[/] {exc}", soft_wrap=True)
         raise typer.Exit(code=1)
+
+
+PLAYWRIGHT_LIVE_EPILOG = """[bold]Examples[/]
+
+In the test Job: write the reporter, stream in the background, run the suite
+with the reporter, then stop the stream (it reads what is left first):
+
+[cyan]bublik-e2e playwright-live --write-reporter /work/bublik-live.mjs[/]
+[cyan]BUBLIK_LIVE_EVENTS=$JOB_ARTIFACTS/live-events.ndjson; export BUBLIK_LIVE_EVENTS[/]
+[cyan]bublik-e2e playwright-live --events "$BUBLIK_LIVE_EVENTS" --url "$SWEEP_PUBLISH_FQDN" \\
+  --out "$JOB_ARTIFACTS/live.json" & live=$![/]
+[cyan]pnpm exec playwright test --reporter=list,html,json,/work/bublik-live.mjs ...[/]
+[cyan]kill -TERM $live; wait $live[/]
+"""
+
+
+@app.command("playwright-live", epilog=PLAYWRIGHT_LIVE_EPILOG)
+def playwright_live(
+    write_reporter_to: Annotated[
+        Optional[Path],
+        typer.Option(
+            "--write-reporter",
+            help="Write the Playwright reporter (an .mjs file) here and exit.",
+        ),
+    ] = None,
+    events: Annotated[
+        Optional[Path],
+        typer.Option(help="The JSON lines the reporter writes (BUBLIK_LIVE_EVENTS)."),
+    ] = None,
+    url: Annotated[
+        Optional[str],
+        typer.Option(help="The Bublik to stream into, e.g. https://bublik.example."),
+    ] = None,
+    out: Annotated[
+        Optional[Path],
+        typer.Option(
+            help="Where to write the live run's key metas and numbering, for "
+            "'playwright --live'."
+        ),
+    ] = None,
+    facts_env: Annotated[
+        str,
+        typer.Option(
+            help="Prefix of the facts' environment variables (default: none, the "
+            "test Job's own)."
+        ),
+    ] = "",
+    browser: Annotated[
+        Optional[str],
+        typer.Option(help="Playwright project streamed (default: JOB_BROWSER)."),
+    ] = None,
+    project: Annotated[
+        str, typer.Option(help="Bublik project the run belongs to.")
+    ] = "bublik-preview",
+    ts_name: Annotated[str, typer.Option(help="The run's TS_NAME.")] = "playwright",
+    cfg: Annotated[
+        Optional[str],
+        typer.Option(help="The run's CFG (default: the preview's name)."),
+    ] = None,
+    app_name: Annotated[
+        Optional[str], typer.Option(help="App name (default: the APP fact).")
+    ] = None,
+    interval: Annotated[
+        int, typer.Option(help="Heartbeat interval announced to Bublik, seconds.")
+    ] = 1,
+    flush_every: Annotated[
+        float, typer.Option(help="Seconds between feed posts at most.")
+    ] = 2.0,
+    idle_timeout: Annotated[
+        float,
+        typer.Option(help="Give up after this many seconds without an event; 0 never."),
+    ] = 0.0,
+) -> None:
+    """Stream a running Playwright suite into Bublik as a live run.
+
+    It never fails the job: when Bublik cannot be reached, it says so, keeps
+    reading, and writes a file that makes 'playwright --live' import afresh.
+    """
+    if write_reporter_to is not None:
+        print(str(write_reporter(write_reporter_to)))
+        return
+    if events is None or not url or out is None:
+        console.print("[bold red]error:[/] pass --events, --url and --out")
+        raise typer.Exit(code=1)
+    facts = facts_from_env(os.environ, facts_env)
+    facts.project = project
+    facts.ts_name = ts_name
+    if cfg:
+        facts.cfg = cfg
+    if browser:
+        facts.browser = browser
+    if app_name:
+        facts.app = app_name
+    stream = LiveStream(
+        url, facts, browser=facts.browser, interval=interval, flush_every=flush_every
+    )
+    try:
+        record = run_live(events, out, stream, idle_timeout=idle_timeout)
+    except CliError as exc:
+        console.print(f"[yellow]warning:[/] live import: {exc}", soft_wrap=True)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps({"run": None}) + "\n", encoding="utf-8")
+        return
+    if record.get("run") is not None:
+        print(f"{url.rstrip('/')}/v2/runs/{record['run']}")
 
 
 @app.command()

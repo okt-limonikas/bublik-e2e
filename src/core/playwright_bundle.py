@@ -162,7 +162,8 @@ def facts_from_env(env: Mapping[str, str], prefix: str) -> Facts:
         preview_page_url=get("PREVIEW_PAGE_URL"),
         deployment=get("PREVIEW_DEPLOYMENT"),
         deployment_url=get("PREVIEW_DEPLOYMENT_URL"),
-        test_run_url=get("TEST_RUN_URL"),
+        # The test Job itself (no prefix) is the test run: its own page.
+        test_run_url=get("TEST_RUN_URL") or (get("JOB_RUN_URL") if not prefix else ""),
         report_url=get("TEST_REPORT_URL"),
         started_at=get("TEST_STARTED_AT"),
         finished_at=get("TEST_FINISHED_AT"),
@@ -201,11 +202,50 @@ class Leaf:
 
 
 @dataclass
+class LiveInfo:
+    """What ``bublik-e2e playwright-live`` streamed: the run's key metas, its
+    plan, and the id, parent, tin and plan id each node got.
+
+    A source import of the bundle merges into the live run only if it carries
+    the same START_TIMESTAMP and CFG, and every node the same id (Bublik's
+    exec_seqno), parent and tin.
+    """
+
+    run: int | None
+    start_timestamp: str = ""
+    cfg: str = ""
+    plan: dict[str, Any] = field(default_factory=dict)
+    nodes: dict[str, dict[str, int]] = field(default_factory=dict)
+    plan_ids: dict[str, int] = field(default_factory=dict)
+
+    @classmethod
+    def load(cls, path: Path) -> LiveInfo | None:
+        """The live run ``path`` describes; None when there was none."""
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except OSError as exc:
+            raise CliError(f"cannot read {path}: {exc}") from exc
+        except json.JSONDecodeError as exc:
+            raise CliError(f"{path} is not JSON: {exc}") from exc
+        if not isinstance(data, dict) or not isinstance(data.get("run"), int):
+            return None
+        return cls(
+            run=data["run"],
+            start_timestamp=str(data.get("start_timestamp") or ""),
+            cfg=str(data.get("cfg") or ""),
+            plan=data.get("plan") or {},
+            nodes={str(k): dict(v) for k, v in (data.get("nodes") or {}).items()},
+            plan_ids={str(k): int(v) for k, v in (data.get("plan_ids") or {}).items()},
+        )
+
+
+@dataclass
 class Conversion:
     root: Node
     leaves: dict[int, Leaf]
     plan: dict[str, Any]
     browser: str
+    live: LiveInfo | None = None
 
     def tests(self) -> list[Node]:
         out: list[Node] = []
@@ -313,13 +353,16 @@ def _hash(path: list[str], params: dict[str, str]) -> str:
     return hashlib.md5(identity.encode(), usedforsecurity=False).hexdigest()
 
 
-def convert(report: dict[str, Any], facts: Facts) -> Conversion:
+def convert(
+    report: dict[str, Any], facts: Facts, live: LiveInfo | None = None
+) -> Conversion:
     """Build the run's tree from ``report`` for ``facts.browser``.
 
     Siblings are ordered by when they ran and laid end to end: Bublik's
     timestamp repair on import shifts any sibling that starts before the
     previous one finished by a whole day, and refuses the run if that is not
-    enough.
+    enough. With ``live``, they are ordered and numbered as the live stream
+    numbered them, and the plan is the one it sent.
     """
     if not isinstance(report, dict) or not isinstance(report.get("suites"), list):
         raise CliError("not a Playwright JSON report: it has no 'suites' list")
@@ -358,6 +401,7 @@ def convert(report: dict[str, Any], facts: Facts) -> Conversion:
             "path": node_path,
             "path_str": "/".join(node_path),
             "iters": [],
+            "_key": test_key(spec),
         }
         leaves_by_node[id(node)] = Leaf(
             attempts=attempts,
@@ -399,8 +443,14 @@ def convert(report: dict[str, Any], facts: Facts) -> Conversion:
             return leaf.raw_start_ms if leaf.raw_start_ms is not None else float("inf")
         return min((earliest(child) for child in node["iters"]), default=float("inf"))
 
+    mapped = live.nodes if live is not None else {}
+
+    def live_id(node: Node) -> float:
+        entry = mapped.get(node["_key"])
+        return entry["id"] if entry else float("inf")
+
     def order(node: Node) -> None:
-        node["iters"].sort(key=earliest)
+        node["iters"].sort(key=lambda child: (live_id(child), earliest(child)))
         for child in node["iters"]:
             order(child)
 
@@ -415,29 +465,76 @@ def convert(report: dict[str, Any], facts: Facts) -> Conversion:
         )
     _place(root, int(first), leaves_by_node)
 
-    test_id = 0
-    tin = 0
     leaves: dict[int, Leaf] = {}
+    if live is None:
+        test_id = 0
+        tin = 0
 
-    def number(node: Node) -> dict[str, Any]:
-        nonlocal test_id, tin
-        test_id += 1
-        node["test_id"] = test_id
-        node["plan_id"] = test_id - 1
+        def number(node: Node) -> dict[str, Any]:
+            nonlocal test_id, tin
+            test_id += 1
+            node["test_id"] = test_id
+            node["plan_id"] = test_id - 1
+            if node["type"] == "test":
+                node["tin"] = tin
+                tin += 1
+            plan: dict[str, Any] = {"name": node["name"], "type": node["type"]}
+            children = [number(child) for child in node["iters"]]
+            if children:
+                plan["children"] = children
+            return plan
+
+        plan = number(root)
+    else:
+        _number_from_live(root, live)
+        plan = live.plan
+    for node in _walk(root):
         if node["type"] == "test":
-            node["tin"] = tin
-            tin += 1
-            leaves[test_id] = leaves_by_node[id(node)]
-        plan: dict[str, Any] = {"name": node["name"], "type": node["type"]}
-        children = [number(child) for child in node["iters"]]
-        if children:
-            plan["children"] = children
-        return plan
-
-    plan = number(root)
+            leaves[node["test_id"]] = leaves_by_node[id(node)]
     recompute_package_statuses(root)
     mark_unexpected_packages(root)
-    return Conversion(root=root, leaves=leaves, plan=plan, browser=browser)
+    return Conversion(root=root, leaves=leaves, plan=plan, browser=browser, live=live)
+
+
+def test_key(spec: dict[str, Any]) -> str:
+    """How the live stream and the converter name a test: its Playwright id."""
+    return f"test:{spec.get('id') or ''}"
+
+
+def package_key(path: list[str]) -> str:
+    return "pkg:" + "/".join(path)
+
+
+def _walk(node: Node):
+    yield node
+    for child in node.get("iters") or []:
+        yield from _walk(child)
+
+
+def _number_from_live(root: Node, live: LiveInfo) -> None:
+    """Give each node the id, tin and plan id the live stream gave it; the
+    nodes it never streamed (tests that never ran) come after, in order."""
+    nodes = list(_walk(root))
+    next_id = max((e["id"] for e in live.nodes.values()), default=0) + 1
+    next_tin = max((e.get("tin", -1) for e in live.nodes.values()), default=-1) + 1
+    next_plan = max(live.plan_ids.values(), default=-1) + 1
+    for node in nodes:
+        entry = live.nodes.get(node["_key"])
+        if entry is not None:
+            node["test_id"] = entry["id"]
+            if node["type"] == "test":
+                node["tin"] = entry["tin"]
+        else:
+            node["test_id"] = next_id
+            next_id += 1
+            if node["type"] == "test":
+                node["tin"] = next_tin
+                next_tin += 1
+        plan_id = live.plan_ids.get(node["_key"])
+        if plan_id is None:
+            plan_id = next_plan
+            next_plan += 1
+        node["plan_id"] = plan_id
 
 
 def mark_unexpected_packages(node: Node) -> bool:
@@ -483,6 +580,7 @@ def _package(name: str, path: list[str], children: list[Node]) -> Node:
         "path": path,
         "path_str": "/".join(path),
         "iters": children,
+        "_key": package_key(path),
     }
 
 
@@ -614,30 +712,55 @@ def write_attachments(
     return written
 
 
+def bublik_timestamp(moment: datetime) -> str:
+    """START_TIMESTAMP's and FINISH_TIMESTAMP's spelling."""
+    return moment.astimezone(timezone.utc).isoformat(timespec="milliseconds")
+
+
+def run_cfg(facts: Facts, browser: str) -> str:
+    return facts.cfg or facts.preview or browser
+
+
 def metas(conversion: Conversion, facts: Facts) -> list[dict[str, str]]:
     root = conversion.root
-    start = datetime.fromtimestamp(root["start_ts_utc"], timezone.utc)
+    live = conversion.live
+    start = bublik_timestamp(datetime.fromtimestamp(root["start_ts_utc"], timezone.utc))
     finish = datetime.fromtimestamp(root["end_ts_utc"], timezone.utc)
-    items: list[dict[str, str]] = [
-        {"name": "PROJECT", "value": facts.project},
-        {"name": "TS_NAME", "value": facts.ts_name},
-        {"name": "CFG", "value": facts.cfg or facts.preview or conversion.browser},
-        {
-            "name": "START_TIMESTAMP",
-            "value": start.isoformat(timespec="milliseconds"),
-            "type": "timestamp",
-        },
-        {
-            "name": "FINISH_TIMESTAMP",
-            "value": finish.isoformat(timespec="milliseconds"),
-            "type": "timestamp",
-        },
-        {"name": "CAMPAIGN_DATE", "value": start.date().isoformat()},
+    return run_metas(
+        facts,
+        conversion.browser,
+        start=live.start_timestamp if live else start,
+        cfg=live.cfg if live else run_cfg(facts, conversion.browser),
+        finish=bublik_timestamp(finish),
         # Bublik concludes run-error from RUN_STATUS ERROR whatever the share
         # of failures: its NOK borders round it to whole percents, so one
         # failure in a few hundred tests would pass for none.
-        {"name": "RUN_STATUS", "value": "ERROR" if root["err"] else "DONE"},
-        {"name": "BROWSER", "value": conversion.browser},
+        status="ERROR" if root["err"] else "DONE",
+    )
+
+
+def run_metas(
+    facts: Facts,
+    browser: str,
+    *,
+    start: str,
+    cfg: str,
+    status: str,
+    finish: str | None = None,
+) -> list[dict[str, str]]:
+    """The run's metas; a live run in progress has no ``finish`` yet."""
+    items: list[dict[str, str]] = [
+        {"name": "PROJECT", "value": facts.project},
+        {"name": "TS_NAME", "value": facts.ts_name},
+        {"name": "CFG", "value": cfg},
+        {"name": "START_TIMESTAMP", "value": start, "type": "timestamp"},
+    ]
+    if finish is not None:
+        items.append({"name": "FINISH_TIMESTAMP", "value": finish, "type": "timestamp"})
+    items += [
+        {"name": "CAMPAIGN_DATE", "value": start[:10]},
+        {"name": "RUN_STATUS", "value": status},
+        {"name": "BROWSER", "value": browser},
     ]
 
     def label(name: str, value: str, type_: str | None = None) -> None:
@@ -667,7 +790,11 @@ def metas(conversion: Conversion, facts: Facts) -> list[dict[str, str]]:
 
 
 def tags(conversion: Conversion, facts: Facts) -> dict[str, str]:
-    out = {"browser": conversion.browser}
+    return run_tags(facts, conversion.browser)
+
+
+def run_tags(facts: Facts, browser: str) -> dict[str, str]:
+    out = {"browser": browser}
     if facts.preview:
         out["preview"] = facts.preview
     if facts.app:
@@ -762,6 +889,7 @@ def _write(path: Path, payload: Any) -> None:
 
 def _strip_private(node: Node) -> None:
     node.pop("_shift_ms", None)
+    node.pop("_key", None)
     for child in node.get("iters") or []:
         _strip_private(child)
 
@@ -781,9 +909,10 @@ def write_bundle(
     *,
     attachments_dir: Path | None = None,
     schemas: Path | None = SCHEMA_DIR,
+    live: LiveInfo | None = None,
 ) -> Written:
     """Write the bundle into ``bundle_dir`` (replacing it), validated, ``.done`` last."""
-    conversion = convert(report, facts)
+    conversion = convert(report, facts, live)
     if bundle_dir.exists():
         shutil.rmtree(bundle_dir)
     bundle_dir.mkdir(parents=True)
