@@ -676,6 +676,10 @@ def playwright(
         str, typer.Option(help="Bublik project the run belongs to.")
     ] = "bublik-preview",
     ts_name: Annotated[str, typer.Option(help="The run's TS_NAME.")] = "playwright",
+    cfg: Annotated[
+        Optional[str],
+        typer.Option(help="The run's CFG (default: the preview's name)."),
+    ] = None,
     app_name: Annotated[
         Optional[str], typer.Option(help="App name (default: the APP fact).")
     ] = None,
@@ -715,6 +719,8 @@ def playwright(
         facts = facts_from_env(os.environ, facts_env)
         facts.project = project
         facts.ts_name = ts_name
+        if cfg:
+            facts.cfg = cfg
         if browser:
             facts.browser = browser
         if app_name:

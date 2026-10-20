@@ -113,7 +113,16 @@ def ensure_project_configs(
             content=per_conf_config(),
             project_id=project_id,
         )
-    if find("meta") is None:
+    existing = find("meta")
+    current = meta_config()
+    if existing is not None:
+        detail = curl_json(
+            f"{base_url}/api/v2/config/{existing['id']}/", cookie_jar=cookie_jar
+        )
+        current = (detail or {}).get("content") or {}
+    merged = merged_meta(current)
+    if existing is None or merged != current:
+        # Saving it makes Bublik categorize the metas it already has again.
         upsert_config(
             base_url,
             cookie_jar,
@@ -121,9 +130,26 @@ def ensure_project_configs(
             config_type="global",
             name="meta",
             description="Meta categorization configuration",
-            content=meta_config(),
+            content=merged,
             project_id=project_id,
         )
+
+
+#: Categories a published run's metas need; a priority of 1 to 3 makes a tag
+#: one of the run's important tags.
+RUN_CATEGORIES: dict[str, dict[str, Any]] = {
+    "Preview": {
+        "type": "tag",
+        "set-comment": "The preview the run tested",
+        "set-patterns": ["^preview$"],
+        "set-priority": 1,
+    },
+}
+
+
+def merged_meta(current: dict[str, Any]) -> dict[str, Any]:
+    """``current`` with the run's categories it lacks; one it has stays as is."""
+    return {**RUN_CATEGORIES, **current}
 
 
 def wait_for_import(

@@ -20,6 +20,7 @@ from core.playwright_bundle import (
     RepoFacts,
     convert,
     facts_from_env,
+    metas,
     write_bundle,
 )
 
@@ -140,6 +141,46 @@ def test_another_browser_and_the_setup_projects_are_left_out() -> None:
     assert all(node["name"] != "authenticate" for node in walk(chromium))
 
 
+def test_packages_holding_an_unexpected_result_are_in_error_up_to_the_root() -> None:
+    root = convert(REPORT, facts()).root
+    failing = next(n for n in walk(root) if n["type"] == "test" and n["err"])
+    path = [n for n in walk(root) if n["type"] == "pkg" and contains(n, failing)]
+
+    assert path and path[0] is root
+    assert all(n["err"] == "Unexpected test result(s)" for n in path)
+    clean = [
+        n
+        for n in walk(root)
+        if n["type"] == "pkg"
+        and not any(t["err"] for t in walk(n) if t["type"] == "test")
+    ]
+    assert all(n["err"] == "" for n in clean)
+
+
+def test_a_run_without_unexpected_results_is_done() -> None:
+    report = json.loads(json.dumps(REPORT))
+    for node in walk_report(report):
+        for test in node.get("tests") or []:
+            test["status"] = "expected"
+    metas = {m["name"]: m["value"] for m in run_metas(report)}
+
+    assert metas["RUN_STATUS"] == "DONE"
+
+
+def contains(node: dict[str, Any], target: dict[str, Any]) -> bool:
+    return any(n is target for n in walk(node))
+
+
+def walk_report(node: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    for suite in node.get("suites") or []:
+        yield from walk_report(suite)
+    yield from node.get("specs") or []
+
+
+def run_metas(report: dict[str, Any]) -> list[dict[str, str]]:
+    return metas(convert(report, facts()), facts())
+
+
 def test_a_title_longer_than_bublik_keeps_is_cut_short_and_stays_unique() -> None:
     report = json.loads(json.dumps(REPORT))
     long = "Scenario: " + "the issues page keeps its filters when " * 3
@@ -240,8 +281,11 @@ def test_metas_say_what_was_tested(bundle: Path) -> None:
     metas = json.loads((bundle / "meta_data.json").read_text())["metas"]
     by = {meta["name"]: meta for meta in metas}
     assert by["PROJECT"]["value"] == "bublik-preview"
-    assert by["CFG"]["value"] == "chromium"
-    assert by["RUN_STATUS"]["value"] == "DONE"
+    # The preview, not the browser: a deployment's browsers share it.
+    assert by["CFG"]["value"] == "chat"
+    # One unexpected result is a run in error.
+    assert by["RUN_STATUS"]["value"] == "ERROR"
+    assert by["BROWSER"]["value"] == "chromium"
     assert by["START_TIMESTAMP"]["value"] == "2026-10-20T10:00:00.000+00:00"
     assert by["FINISH_TIMESTAMP"]["type"] == "timestamp"
     assert by["CAMPAIGN_DATE"]["value"] == "2026-10-20"
@@ -546,6 +590,8 @@ def test_import_sets_the_project_up_and_waits_for_the_run(
         "uri": "https://github.com/ts-factory/bublik-ui",
     }
     assert configs["per_conf"]["content"]["RUN_COMPLETE_FILE"] == ".done"
+    assert configs["meta"]["content"]["Preview"]["set-patterns"] == ["^preview$"]
+    assert configs["meta"]["content"]["Preview"]["set-priority"] == 1
     assert json.loads((tmp_path / "summary.json").read_text()) == {
         "links": [{"title": "Bublik run", "url": f"{url}/v2/runs/77"}]
     }
@@ -575,6 +621,8 @@ def test_import_merges_into_what_the_project_has(
         },
     )
     fake.add_config("per_conf", 2, {"RUN_COMPLETE_FILE": "custom"})
+    tuned = {"type": "tag", "set-patterns": ["^device$"], "set-priority": 3}
+    fake.add_config("meta", 2, {"Device": tuned})
     outcome = runner.invoke(
         app, import_args(tmp_path, url, "--setup-project"), env=cli_env()
     )
@@ -585,6 +633,9 @@ def test_import_merges_into_what_the_project_has(
     assert set(references["REVISIONS"]) == {"TE_REV", "UI_REV", "BACKEND_REV"}
     assert fake.configs[1]["content"] == {"RUN_COMPLETE_FILE": "custom"}
     assert [c["name"] for c in fake.configs] == ["references", "per_conf", "meta"]
+    meta = fake.configs[2]["content"]
+    assert meta["Device"] == tuned
+    assert meta["Preview"]["set-priority"] == 1
 
 
 def test_import_without_setup_needs_the_project(

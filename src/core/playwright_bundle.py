@@ -103,6 +103,8 @@ class Facts:
     browser: str = ""
     project: str = "bublik-preview"
     ts_name: str = "playwright"
+    # cfg is the run's CFG; empty means the preview's name.
+    cfg: str = ""
     app: str = ""
     preview: str = ""
     preview_url: str = ""
@@ -434,7 +436,23 @@ def convert(report: dict[str, Any], facts: Facts) -> Conversion:
 
     plan = number(root)
     recompute_package_statuses(root)
+    mark_unexpected_packages(root)
     return Conversion(root=root, leaves=leaves, plan=plan, browser=browser)
+
+
+def mark_unexpected_packages(node: Node) -> bool:
+    """Give each package holding an unexpected result an ``err`` of its own,
+    up to the root, and say whether ``node`` holds one.
+
+    Bublik's log tree marks a node by its ``err`` alone, so without this only
+    the failing tests show; its NOK counts look at tests only.
+    """
+    if node["type"] != "pkg":
+        return bool(node["err"])
+    unexpected = [mark_unexpected_packages(child) for child in node["iters"]]
+    if any(unexpected):
+        node["err"] = UNEXPECTED
+    return any(unexpected)
 
 
 #: Bublik keeps a test's (and a package's) name in a varchar(64).
@@ -603,7 +621,7 @@ def metas(conversion: Conversion, facts: Facts) -> list[dict[str, str]]:
     items: list[dict[str, str]] = [
         {"name": "PROJECT", "value": facts.project},
         {"name": "TS_NAME", "value": facts.ts_name},
-        {"name": "CFG", "value": conversion.browser},
+        {"name": "CFG", "value": facts.cfg or facts.preview or conversion.browser},
         {
             "name": "START_TIMESTAMP",
             "value": start.isoformat(timespec="milliseconds"),
@@ -615,7 +633,10 @@ def metas(conversion: Conversion, facts: Facts) -> list[dict[str, str]]:
             "type": "timestamp",
         },
         {"name": "CAMPAIGN_DATE", "value": start.date().isoformat()},
-        {"name": "RUN_STATUS", "value": "DONE"},
+        # Bublik concludes run-error from RUN_STATUS ERROR whatever the share
+        # of failures: its NOK borders round it to whole percents, so one
+        # failure in a few hundred tests would pass for none.
+        {"name": "RUN_STATUS", "value": "ERROR" if root["err"] else "DONE"},
         {"name": "BROWSER", "value": conversion.browser},
     ]
 
