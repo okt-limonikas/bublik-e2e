@@ -63,6 +63,7 @@ uv run pytest
 | `run` | `generate` then `import` in one shot. | Yes |
 | `plan` | Expand a plan file and print what it would generate. **Writes nothing.** | No |
 | `live` | Stream one fixture run into the instance over TE's live-import API (`init`/`feed`/`finish`), paced in real time. | Yes |
+| `playwright` | Turn a Playwright JSON report into one run's bundle, and with `--import` import it. | With `--import` |
 
 ### Configuration
 
@@ -485,6 +486,69 @@ bublik-e2e live basic --dry-run --output live.json
 - Measurements are not streamed (TE sends them as MI artifacts); they show up
   after `--then-import`.
 
+## Playwright results as a run
+
+`bublik-e2e playwright` turns one browser's Playwright run into a Bublik run.
+It reads the report of Playwright's `json` reporter and writes a bundle Bublik
+can import, and with `--import` imports it:
+
+```bash
+bublik-e2e playwright \
+  --results results.json --attachments-dir test-output \
+  --publish-dir "$DATA/logs/logs/e2e-results" --bundle-id chat-42-chromium \
+  --project bublik-preview --ts-name bublik-ui-e2e \
+  --import --url https://staging.example --email admin@bublik.com --password admin \
+  --setup-project --summary summary.json
+```
+
+- **The run.** The tests of the Playwright project named after the browser
+  (`--browser`, else the `JOB_BROWSER` fact); setup projects and other browsers
+  are left out. Each spec file is a package, each `describe` a nested package,
+  and each test a test with the parameter `browser`. Spec tags become the
+  test's requirements. A test Playwright counts as unexpected is unexpected in
+  Bublik, with the first line of each error as a verdict; a flaky test passes
+  with the verdict `flaky: passed on retry N`. Siblings are laid end to end in
+  the order they ran, since Bublik's timestamp repair shifts overlapping ones
+  by a day.
+- **What was tested.** Read from environment variables under the `--facts-env`
+  prefix (default `SWEEP_`, as a bublik-preview Sweep hands them to its publish
+  Job; `--facts-env ""` reads a Job's own):
+
+  | Variable | Becomes |
+  |----------|---------|
+  | `PREVIEW_NAME`, `PREVIEW_FQDN` (else `PREVIEW_URL`), `PREVIEW_PAGE_URL` | labels `PREVIEW`, `PREVIEW_URL`, `PREVIEW_PAGE_URL`; tag `preview` |
+  | `PREVIEW_DEPLOYMENT`, `PREVIEW_DEPLOYMENT_URL` | labels `DEPLOYMENT`, `DEPLOYMENT_URL` |
+  | `JOB_BROWSER` | `CFG`, label `BROWSER`, tag `browser`, the test parameter |
+  | `APP` | label `APP`, tag `app` |
+  | `TEST_RUN_URL`, `TEST_REPORT_URL` | label `TEST_RUN_URL`; the report linked from the run's root log |
+  | `TEST_STARTED_AT` | the run's start when no test has a result |
+  | `PREVIEW_SOURCE_<SLOT>_SHA` | `<SLOT>_REV` (revision), one per slot |
+  | `…_BRANCH` (else a `REF` that is a branch) | `<SLOT>_BRANCH` (branch) |
+  | `…_PR_URL`, `…_PR_NUMBER` (else from a `refs/pull/N/head` `REF`) | label `<SLOT>_PR`, tag `<slot>_pr` |
+  | `…_COMMIT_URL` (else the repository's page + `/commit/<sha>`) | label `<SLOT>_COMMIT_URL` |
+  | `…_REPOSITORY_URL` (else `…_REPOSITORY` as a web URL) | label `<SLOT>_REPOSITORY`, the project's `REVISIONS` link |
+
+- **The bundle**, at `<publish-dir>/<bundle-id>/`, replaced if it exists:
+  `meta_data.json`, `bublik.json` (with a plan mirroring the tree: Bublik's
+  importer reads every iteration's `plan_id`), `json/` (a log per node: the
+  attempts, Playwright's steps, the full errors and the attachments' names),
+  `attachments/node_id<N>/` with a failed test's screenshots, videos and
+  traces (the last attempt's under their own names, earlier attempts'
+  prefixed `retry<k>-`; looked up under `--attachments-dir` by their path
+  after `test-output/`), `attachments/node_1_0/` linking the HTML report, and
+  `.done`, written last. Both JSON files are validated against copies of
+  Bublik's schemas shipped with the tool (`--schemas DIR` to use others).
+- **The import.** The bundle is imported from
+  `{url}/logs/<publish-dir name>/<bundle-id>/`, so the publish dir must be one
+  the instance's log server serves there. A bundle already imported from that
+  URL is not imported again. `--setup-project` creates the project if it is
+  missing, adds the logs base and each repository's `REVISIONS` link to its
+  `references` without dropping what is there (issue trackers, other bases and
+  links), and writes `per_conf` and `meta` only if the project has none.
+  Without it the project must exist. The run's URL is printed, and
+  `--summary` writes `{"links": [{"title", "url"}]}` with it (the bundle's URL
+  without `--import`), which bublik-preview shows on the run's page.
+
 ## Package layout
 
 `src/`:
@@ -502,6 +566,9 @@ bublik-e2e live basic --dry-run --output live.json
 | `core/classify_api.py` | creating those issues and rules against imported runs |
 | `core/importer.py` | API import path and live progress table |
 | `core/live.py` | TE live-import simulation (`live` command) |
+| `core/playwright_bundle.py` | Playwright JSON report to bundle (`playwright` command) |
+| `core/bundle_import.py` | importing one published bundle into a project |
+| `core/log_json.py` | the per-node log JSON (`json/`) Bublik's log viewer reads |
 | `core/fixture_api.py` / `core/synthetic_fixture.py` | the public fixture-authoring API |
 | `fixtures/` | bundled `basic` / `dpdk` / `net_drv` providers |
 
