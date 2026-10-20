@@ -336,7 +336,8 @@ def convert(report: dict[str, Any], facts: Facts) -> Conversion:
             (_attempt(r) for r in test.get("results") or []), key=lambda a: a.retry
         )
         obtained, expected, err, verdicts = _outcome(test, attempts)
-        name = str(spec.get("title", "test"))
+        title = str(spec.get("title", "test"))
+        name = bublik_name(title)
         params = {"browser": browser}
         node_path = [*path, name]
         starts = [a.start_ms for a in attempts if a.start_ms]
@@ -348,7 +349,7 @@ def convert(report: dict[str, Any], facts: Facts) -> Conversion:
             "params": params,
             "hash": _hash(node_path, params),
             "reqs": tags,
-            "objective": "",
+            "objective": title if name != title else "",
             "err": err,
             "obtained": {"result": {"status": obtained, "verdicts": verdicts}},
             "expected": {"results": [{"status": expected}]},
@@ -436,7 +437,21 @@ def convert(report: dict[str, Any], facts: Facts) -> Conversion:
     return Conversion(root=root, leaves=leaves, plan=plan, browser=browser)
 
 
+#: Bublik keeps a test's (and a package's) name in a varchar(64).
+MAX_NAME = 64
+
+
+def bublik_name(title: str) -> str:
+    """A title as a Bublik test name: itself if it fits, else cut short
+    with a hash of the whole, so two long titles never collide."""
+    if len(title) <= MAX_NAME:
+        return title
+    digest = hashlib.md5(title.encode()).hexdigest()[:8]
+    return title[: MAX_NAME - 10].rstrip() + "~" + digest
+
+
 def _package(name: str, path: list[str], children: list[Node]) -> Node:
+    title, name = name, bublik_name(name)
     return {
         "name": name,
         "type": "pkg",
@@ -444,7 +459,7 @@ def _package(name: str, path: list[str], children: list[Node]) -> Node:
         "hash": "",
         "tin": -1,
         "reqs": [],
-        "objective": "",
+        "objective": title if name != title else "",
         "err": "",
         "obtained": {"result": {"status": "PASSED"}},
         "path": path,
