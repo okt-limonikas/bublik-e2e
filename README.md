@@ -516,11 +516,11 @@ bublik-e2e playwright \
 
   | Variable | Becomes |
   |----------|---------|
-  | `PREVIEW_NAME`, `PREVIEW_FQDN` (else `PREVIEW_URL`), `PREVIEW_PAGE_URL` | labels `PREVIEW`, `PREVIEW_URL`, `PREVIEW_PAGE_URL`; tag `preview` |
+  | `PREVIEW_NAME`, `PREVIEW_FQDN` (else `PREVIEW_URL`), `PREVIEW_PAGE_URL` | `CFG` (unless `--cfg`), labels `PREVIEW`, `PREVIEW_URL`, `PREVIEW_PAGE_URL`; tag `preview` |
   | `PREVIEW_DEPLOYMENT`, `PREVIEW_DEPLOYMENT_URL` | labels `DEPLOYMENT`, `DEPLOYMENT_URL` |
-  | `JOB_BROWSER` | `CFG`, label `BROWSER`, tag `browser`, the test parameter |
+  | `JOB_BROWSER` | label `BROWSER`, tag `browser`, the test parameter |
   | `APP` | label `APP`, tag `app` |
-  | `TEST_RUN_URL`, `TEST_REPORT_URL` | label `TEST_RUN_URL`; the report linked from the run's root log |
+  | `TEST_RUN_URL` (a Job's own: `JOB_RUN_URL`), `TEST_REPORT_URL` | label `TEST_RUN_URL`; the report linked from the run's root log |
   | `TEST_STARTED_AT` | the run's start when no test has a result |
   | `PREVIEW_SOURCE_<SLOT>_SHA` | `<SLOT>_REV` (revision), one per slot |
   | `…_BRANCH` (else a `REF` that is a branch) | `<SLOT>_BRANCH` (branch) |
@@ -548,6 +548,65 @@ bublik-e2e playwright \
   Without it the project must exist. The run's URL is printed, and
   `--summary` writes `{"links": [{"title", "url"}]}` with it (the bundle's URL
   without `--import`), which bublik-preview shows on the run's page.
+  With `--live live.json` (written by `playwright-live`, below), the bundle
+  takes the live run's START_TIMESTAMP, CFG, plan and numbering, so its import
+  merges into the live run; a missing file, or one with no live run, imports
+  afresh.
+
+### Live import
+
+`bublik-e2e playwright-live` streams the suite into Bublik while it runs, so
+the run page fills in test by test; when the suite ends, `playwright --live`
+imports the whole bundle into that same run, adding the logs and attachments
+the live protocol does not carry. It takes two pieces in the test Job:
+
+1. **A Playwright reporter**, shipped with the tool: `playwright-live
+   --write-reporter PATH` writes it. It only records, one JSON line per event,
+   to the file `BUBLIK_LIVE_EVENTS` names (nothing without it):
+   - `{"type":"begin","time","browser","suites"}` once the run begins: the
+     project named `JOB_BROWSER` (or `BUBLIK_LIVE_BROWSER`), in the json
+     reporter's suite shape (`title`, `file`, `line`, `column`, `specs` with
+     the test `id`, nested `suites`);
+   - `{"type":"test","id","test"}` for each test's final attempt (one that
+     settled it: passed as expected, skipped, interrupted, or out of retries),
+     `test` in the json reporter's shape with every attempt;
+   - `{"type":"end","time","status"}`.
+2. **The streamer**, `playwright-live --events FILE --url URL --out live.json`,
+   in the background. It follows the file and speaks Bublik's live protocol
+   (`init`, `feed`, `finish`; open endpoints, sent without a session). Bublik
+   follows a live run along its plan and cannot go back, so results are sent
+   in plan order: a test that settles early, while one before it waits for
+   its retries (Playwright retries after the rest of its file), waits too.
+   Tests that never ran are skipped over. The run's metas are the bundle's,
+   with `RUN_STATUS=RUNNING` and no `FINISH_TIMESTAMP`; the facts are the Job's
+   own variables (`--facts-env ""`). On SIGTERM it reads what is left of the
+   file first, then finishes the run.
+
+`--out` records `{"run", "url", "start_timestamp", "cfg", "plan", "plan_ids",
+"nodes": {key: {"id", "parent", "tin", "plan_id"}}}`, keyed `pkg:<path>` and
+`test:<Playwright test id>`: a source import merges into a live run only when
+it carries the same key metas and every node the same sequence number, parent
+and tin. Live import never fails the Job: when Bublik cannot start or take the
+run, the streamer says so and writes `{"run": null}`, and the publish side
+imports afresh.
+
+In the test Job (the Playwright image has Python and curl; `uvx` installs the
+tool):
+
+```bash
+bublik-e2e playwright-live --write-reporter /work/bublik-live.mjs
+export BUBLIK_LIVE_EVENTS="$JOB_ARTIFACTS/live-events.ndjson"
+bublik-e2e playwright-live --events "$BUBLIK_LIVE_EVENTS" --url "$SWEEP_PUBLISH_FQDN" \
+  --project bublik-preview --ts-name bublik-ui-e2e --out "$JOB_ARTIFACTS/live.json" &
+live=$!
+PLAYWRIGHT_JSON_OUTPUT_FILE=dist/.playwright/apps/bublik/results.json \
+PLAYWRIGHT_HTML_OUTPUT_DIR=dist/.playwright/apps/bublik/playwright-report \
+  pnpm exec playwright test ... --reporter=list,html,json,/work/bublik-live.mjs
+kill -TERM "$live"; wait "$live"
+```
+
+and in the publish Job, `bublik-e2e playwright ... --live
+"$SWEEP_ARTIFACTS/live.json"` with the same `--project` and `--ts-name`.
 
 ## Package layout
 
@@ -567,6 +626,7 @@ bublik-e2e playwright \
 | `core/importer.py` | API import path and live progress table |
 | `core/live.py` | TE live-import simulation (`live` command) |
 | `core/playwright_bundle.py` | Playwright JSON report to bundle (`playwright` command) |
+| `core/playwright_live.py` / `core/playwright_live_reporter.mjs` | a running Playwright suite streamed live (`playwright-live` command) |
 | `core/bundle_import.py` | importing one published bundle into a project |
 | `core/log_json.py` | the per-node log JSON (`json/`) Bublik's log viewer reads |
 | `core/fixture_api.py` / `core/synthetic_fixture.py` | the public fixture-authoring API |
