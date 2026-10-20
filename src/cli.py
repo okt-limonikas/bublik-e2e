@@ -13,14 +13,23 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 from typing import Annotated, Callable, List, Optional
 
 import typer
 from rich.table import Table
 
+from core.bundle_import import import_bundle
 from core.classification import build_classification
 from core.common import CliError, console
+from core.playwright_bundle import (
+    SCHEMA_DIR,
+    facts_from_env,
+    revisions,
+    write_bundle,
+)
+from core.settings import Settings
 from core.discovery import known_fixture_names, selected_fixtures
 from core.importer import generate_and_import, import_manifest
 from core.live import simulate_live_run
@@ -618,6 +627,139 @@ def plan(
         f"{len(empty_dates)} empty, "
         f"{sum(1 for run in planned if run.import_via == 'ui')} imported through the UI"
     )
+
+
+PLAYWRIGHT_EPILOG = """[bold]Examples[/]
+
+[dim]Inside a bublik-preview publish Job (the test run's facts are SWEEP_*):[/]
+
+[cyan]bublik-e2e playwright --results "$SWEEP_ARTIFACTS/results.json" --attachments-dir "$SWEEP_ARTIFACTS/test-output" --publish-dir "$PREVIEW_DIR/data/logs/logs/e2e-results" --bundle-id "$SWEEP_PREVIEW_NAME-$SWEEP_PREVIEW_DEPLOYMENT-$SWEEP_JOB_BROWSER" --import --url "$PREVIEW_FQDN" --setup-project[/]
+
+[dim]From the test Job itself, reading its own variables:[/]
+
+[cyan]bublik-e2e playwright --facts-env "" --results results.json --publish-dir /srv/logs/e2e-results --bundle-id run-1[/]
+"""
+
+
+@app.command(epilog=PLAYWRIGHT_EPILOG)
+def playwright(
+    results: Annotated[
+        Path, typer.Option(help="Playwright JSON report (the json reporter's file).")
+    ],
+    publish_dir: Annotated[
+        Path,
+        typer.Option(
+            help="Directory the instance serves at {url}/logs/<name>/; the bundle "
+            "is written to <publish-dir>/<bundle-id>/."
+        ),
+    ],
+    bundle_id: Annotated[str, typer.Option(help="The bundle's directory name.")],
+    attachments_dir: Annotated[
+        Optional[Path],
+        typer.Option(
+            help="Where the report's test-output/ was copied to; attachment paths "
+            "are looked up under it."
+        ),
+    ] = None,
+    facts_env: Annotated[
+        str,
+        typer.Option(
+            help="Prefix of the environment variables the facts are read from "
+            "(PREVIEW_NAME, PREVIEW_SOURCE_<SLOT>_SHA, JOB_BROWSER, ...)."
+        ),
+    ] = "SWEEP_",
+    browser: Annotated[
+        Optional[str],
+        typer.Option(help="Playwright project to convert (default: JOB_BROWSER)."),
+    ] = None,
+    project: Annotated[
+        str, typer.Option(help="Bublik project the run belongs to.")
+    ] = "bublik-preview",
+    ts_name: Annotated[str, typer.Option(help="The run's TS_NAME.")] = "playwright",
+    app_name: Annotated[
+        Optional[str], typer.Option(help="App name (default: the APP fact).")
+    ] = None,
+    do_import: Annotated[
+        bool, typer.Option("--import", help="Import the bundle once written.")
+    ] = False,
+    url: UrlOpt = None,
+    email: EmailOpt = None,
+    password: PasswordOpt = None,
+    setup_project: Annotated[
+        bool,
+        typer.Option(
+            help="Create the project if missing, merge its logs base and revision "
+            "links into 'references', and add 'per_conf' and 'meta' when absent."
+        ),
+    ] = False,
+    timeout: Annotated[
+        int, typer.Option(help="Seconds to wait for the import to finish.")
+    ] = 600,
+    summary: Annotated[
+        Optional[Path],
+        typer.Option(help='Write {"links": [...]} with the run (or bundle) URL here.'),
+    ] = None,
+    schemas: Annotated[
+        Optional[Path],
+        typer.Option(
+            help="Directory with Bublik's run_log.json and meta_data.json "
+            "(default: the copies bundled with this tool)."
+        ),
+    ] = None,
+    no_validate: Annotated[
+        bool, typer.Option("--no-validate", help="Skip schema validation.")
+    ] = False,
+) -> None:
+    """Turn a Playwright JSON report into a Bublik run bundle, and import it."""
+    try:
+        facts = facts_from_env(os.environ, facts_env)
+        facts.project = project
+        facts.ts_name = ts_name
+        if browser:
+            facts.browser = browser
+        if app_name:
+            facts.app = app_name
+        try:
+            report = json.loads(results.read_text(encoding="utf-8"))
+        except OSError as exc:
+            raise CliError(f"cannot read {results}: {exc}") from exc
+        except json.JSONDecodeError as exc:
+            raise CliError(f"{results} is not JSON: {exc}") from exc
+        written = write_bundle(
+            report,
+            facts,
+            publish_dir / bundle_id,
+            attachments_dir=attachments_dir,
+            schemas=None if no_validate else (schemas or SCHEMA_DIR),
+        )
+        console.print(
+            f"[green]✓[/] bundle {written.path}: {written.tests} tests, "
+            f"{written.unexpected} unexpected, {written.attachments} attachments",
+            soft_wrap=True,
+        )
+        settings = Settings.from_args(
+            argparse.Namespace(url=url, email=email, password=password)
+        )
+        bundle_url = f"{settings.logs_base_url}/{publish_dir.name}/{bundle_id}/"
+        link = {"title": "Bundle", "url": bundle_url}
+        if do_import:
+            run_id = import_bundle(
+                settings,
+                bundle_url,
+                project,
+                setup_project=setup_project,
+                revisions=revisions(facts),
+                timeout=timeout,
+            )
+            run_url = f"{settings.ui_base_url}/runs/{run_id}"
+            link = {"title": "Bublik run", "url": run_url}
+            print(run_url)
+        if summary is not None:
+            summary.parent.mkdir(parents=True, exist_ok=True)
+            summary.write_text(json.dumps({"links": [link]}) + "\n", encoding="utf-8")
+    except CliError as exc:
+        console.print(f"[bold red]error:[/] {exc}", soft_wrap=True)
+        raise typer.Exit(code=1)
 
 
 @app.command()

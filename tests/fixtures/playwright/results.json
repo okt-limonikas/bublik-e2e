@@ -1,0 +1,349 @@
+{
+  "config": {
+    "rootDir": "/work/apps/bublik/e2e",
+    "version": "1.58.2",
+    "projects": [
+      {"id": "auth", "name": "auth"},
+      {"id": "import", "name": "import"},
+      {"id": "chromium", "name": "chromium"},
+      {"id": "firefox", "name": "firefox"}
+    ]
+  },
+  "suites": [
+    {
+      "title": "runs-page.spec.ts",
+      "file": "runs-page.spec.ts",
+      "line": 0,
+      "column": 0,
+      "specs": [
+        {
+          "title": "exports the runs as CSV",
+          "ok": true,
+          "tags": ["@runs"],
+          "id": "rp-1",
+          "file": "runs-page.spec.ts",
+          "line": 10,
+          "column": 2,
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [{"type": "skip", "description": "not in this build"}],
+              "expectedStatus": "skipped",
+              "projectId": "chromium",
+              "projectName": "chromium",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "skipped",
+                  "duration": 0,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-20T10:02:00.000Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "skipped"
+            }
+          ]
+        },
+        {
+          "title": "lists the runs of a day",
+          "ok": true,
+          "tags": ["@runs", "@smoke"],
+          "id": "rp-2",
+          "file": "runs-page.spec.ts",
+          "line": 30,
+          "column": 2,
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "chromium",
+              "projectName": "chromium",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 4250,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-20T10:02:01.000Z",
+                  "annotations": [],
+                  "attachments": [],
+                  "steps": [
+                    {
+                      "title": "Given the runs page",
+                      "duration": 1200,
+                      "steps": [{"title": "page.goto(/v2/runs)", "duration": 1100}]
+                    },
+                    {"title": "Then a row per run", "duration": 300}
+                  ]
+                }
+              ],
+              "status": "expected"
+            },
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "firefox",
+              "projectName": "firefox",
+              "results": [
+                {
+                  "workerIndex": 1,
+                  "parallelIndex": 0,
+                  "status": "failed",
+                  "duration": 3000,
+                  "errors": [{"message": "Error: firefox only"}],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-20T11:00:00.000Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "unexpected"
+            }
+          ]
+        }
+      ],
+      "suites": []
+    },
+    {
+      "title": "auth.setup.ts",
+      "file": "auth.setup.ts",
+      "line": 0,
+      "column": 0,
+      "specs": [
+        {
+          "title": "authenticate",
+          "ok": true,
+          "tags": [],
+          "id": "auth-1",
+          "file": "auth.setup.ts",
+          "line": 5,
+          "column": 1,
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "auth",
+              "projectName": "auth",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 2000,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-20T09:59:50.000Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ]
+        }
+      ],
+      "suites": []
+    },
+    {
+      "title": "dashboard.spec.ts",
+      "file": "dashboard.spec.ts",
+      "line": 0,
+      "column": 0,
+      "specs": [
+        {
+          "title": "shows the latest runs",
+          "ok": true,
+          "tags": ["@dashboard"],
+          "id": "db-1",
+          "file": "dashboard.spec.ts",
+          "line": 5,
+          "column": 2,
+          "tests": [
+            {
+              "timeout": 60000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "chromium",
+              "projectName": "chromium",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 3500,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-10-20T10:00:00.000Z",
+                  "annotations": [],
+                  "attachments": []
+                }
+              ],
+              "status": "expected"
+            }
+          ]
+        }
+      ],
+      "suites": [
+        {
+          "title": "Dashboard filters",
+          "file": "dashboard.spec.ts",
+          "line": 20,
+          "column": 6,
+          "specs": [
+            {
+              "title": "filters by date",
+              "ok": false,
+              "tags": ["@dashboard", "@url-params"],
+              "id": "db-2",
+              "file": "dashboard.spec.ts",
+              "line": 22,
+              "column": 4,
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 0,
+                      "parallelIndex": 0,
+                      "status": "failed",
+                      "duration": 10000,
+                      "error": {"message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoBeVisible\u001b[2m()\u001b[22m failed\n\nLocator: getByRole('row')\nExpected: visible"},
+                      "errors": [{"message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoBeVisible\u001b[2m()\u001b[22m failed\n\nLocator: getByRole('row')\nExpected: visible", "location": {"file": "/work/apps/bublik/e2e/dashboard.spec.ts", "line": 30, "column": 5}}],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-20T10:00:10.000Z",
+                      "annotations": [],
+                      "attachments": []
+                    },
+                    {
+                      "workerIndex": 1,
+                      "parallelIndex": 0,
+                      "status": "failed",
+                      "duration": 10000,
+                      "errors": [{"message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoBeVisible\u001b[2m()\u001b[22m failed\n\nLocator: getByRole('row')"}],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 1,
+                      "startTime": "2026-10-20T10:00:21.000Z",
+                      "annotations": [],
+                      "attachments": [
+                        {"name": "screenshot", "contentType": "image/png", "path": "/work/dist/.playwright/apps/bublik/test-output/dashboard-Dashboard-filters-filters-by-date-chromium-retry1/test-failed-1.png"},
+                        {"name": "video", "contentType": "video/webm", "path": "/work/dist/.playwright/apps/bublik/test-output/dashboard-Dashboard-filters-filters-by-date-chromium-retry1/video.webm"}
+                      ]
+                    },
+                    {
+                      "workerIndex": 2,
+                      "parallelIndex": 0,
+                      "status": "timedOut",
+                      "duration": 60000,
+                      "errors": [
+                        {"message": "\u001b[31mTest timeout of 60000ms exceeded.\u001b[39m"},
+                        {"message": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mlocator\u001b[39m\u001b[2m).\u001b[22mtoBeVisible\u001b[2m()\u001b[22m failed\n\nLocator: getByRole('row')"}
+                      ],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 2,
+                      "startTime": "2026-10-20T10:00:32.000Z",
+                      "annotations": [],
+                      "attachments": [
+                        {"name": "screenshot", "contentType": "image/png", "path": "/work/dist/.playwright/apps/bublik/test-output/dashboard-Dashboard-filters-filters-by-date-chromium-retry2/test-failed-1.png"},
+                        {"name": "video", "contentType": "video/webm", "path": "/work/dist/.playwright/apps/bublik/test-output/dashboard-Dashboard-filters-filters-by-date-chromium-retry2/video.webm"},
+                        {"name": "trace", "contentType": "application/zip", "path": "/work/dist/.playwright/apps/bublik/test-output/dashboard-Dashboard-filters-filters-by-date-chromium-retry2/trace.zip"}
+                      ],
+                      "steps": [
+                        {"title": "Given the dashboard", "duration": 1000},
+                        {"title": "Then the rows of the day", "duration": 58000, "error": {"message": "timeout"}}
+                      ]
+                    }
+                  ],
+                  "status": "unexpected"
+                }
+              ]
+            },
+            {
+              "title": "filters by project",
+              "ok": true,
+              "tags": [],
+              "id": "db-3",
+              "file": "dashboard.spec.ts",
+              "line": 40,
+              "column": 4,
+              "tests": [
+                {
+                  "timeout": 60000,
+                  "annotations": [],
+                  "expectedStatus": "passed",
+                  "projectId": "chromium",
+                  "projectName": "chromium",
+                  "results": [
+                    {
+                      "workerIndex": 3,
+                      "parallelIndex": 0,
+                      "status": "failed",
+                      "duration": 5000,
+                      "errors": [{"message": "Error: flaked"}],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 0,
+                      "startTime": "2026-10-20T10:01:40.000Z",
+                      "annotations": [],
+                      "attachments": []
+                    },
+                    {
+                      "workerIndex": 4,
+                      "parallelIndex": 0,
+                      "status": "passed",
+                      "duration": 4000,
+                      "errors": [],
+                      "stdout": [],
+                      "stderr": [],
+                      "retry": 1,
+                      "startTime": "2026-10-20T10:01:46.000Z",
+                      "annotations": [],
+                      "attachments": []
+                    }
+                  ],
+                  "status": "flaky"
+                }
+              ]
+            }
+          ],
+          "suites": []
+        }
+      ]
+    }
+  ],
+  "errors": [],
+  "stats": {
+    "startTime": "2026-10-20T09:59:49.000Z",
+    "duration": 150000,
+    "expected": 3,
+    "skipped": 1,
+    "unexpected": 2,
+    "flaky": 1
+  }
+}
