@@ -6,16 +6,18 @@ created here did not exist when the ``+ui`` run was generated, so when Bublik
 stamps that run on import it is demonstrably the *rule* doing the work and not
 the fixture.
 
-Rules are created through ``POST /results/{id}/classify/`` — the endpoint the UI
+Rules are created through ``POST /results/classify/`` — the bulk endpoint the UI
 itself calls — rather than by POSTing to ``/issue_rules/`` directly. That way the
-fixture exercises the real triage path, and the backend resolves the test and
-captures the matcher from the result, so this module never has to look up a test
-id or reconstruct a parameter dict.
+fixture exercises the real triage path. The endpoint takes the matcher in full,
+one per test among the results, so what a rule should contain is read first from
+``POST /results/classify/options/``: the test id, the parameters and verdicts the
+result has, and the run's important tags. This module never reconstructs any of
+those itself.
 
-Classifying stamps a single result, and Bublik otherwise applies rules only on
-import, so the API-seeded runs -- imported before any rule existed -- would carry
-one stamp per rule and nothing else. The last stage therefore re-applies the
-rules to every API-seeded run that carries pins, through
+Each rule classifies its pin's single result, and Bublik otherwise applies rules
+only on import, so the API-seeded runs -- imported before any rule existed --
+would carry one stamp per rule and nothing else. The last stage therefore
+re-applies the rules to every API-seeded run that carries pins, through
 ``POST /runs/{id}/apply_rules/`` (the UI's "Apply rules" button). That is what
 gives an issue a realistic number of results across runs and days; the ``+ui``
 run remains the proof that import-time stamping works on its own.
@@ -30,25 +32,78 @@ import urllib.parse
 from core.classification import MATCH_DIMENSIONS
 from core.common import CliError, console, write_json
 
-# An omitted matcher key means "capture it from the result"; an explicitly empty
-# one means "do not apply this criterion". So a rule keeps exactly the dimensions
-# it names and suppresses the rest, without this module knowing their values.
+# An empty matcher dimension means "do not apply this criterion", so a rule keeps
+# exactly the dimensions it names, filled from the classify options, and
+# suppresses the rest.
 EMPTY_BY_DIMENSION: dict[str, Any] = {"parameters": {}, "verdicts": [], "tags": []}
 
 
-def matcher_for(match: list[str]) -> dict[str, Any]:
+def matcher_for(match: list[str], options: dict[str, Any]) -> dict[str, Any]:
     """Build the classify matcher that keeps only ``match``.
 
-    >>> matcher_for([])
-    {'parameters': {}, 'verdicts': [], 'tags': []}
-    >>> matcher_for(["verdicts"])
-    {'parameters': {}, 'tags': []}
+    ``options`` is the ``/results/classify/options/`` response for the one
+    result being classified: its single test supplies the test id, the
+    parameters and the verdicts, and the run's default (important) tags supply
+    the tags -- the same values the single-result endpoint used to capture on
+    its own.
+
+    >>> options = {
+    ...     "tags": {"default": ["linux"], "allowed": ["linux", "x86"]},
+    ...     "tests": [
+    ...         {"test_id": 5, "parameters": {"mode": "promisc"}, "verdicts": ["lost"]}
+    ...     ],
+    ... }
+    >>> matcher_for([], options)
+    {'test_id': 5, 'parameters': {}, 'verdicts': [], 'tags': []}
+    >>> matcher_for(["verdicts"], options)
+    {'test_id': 5, 'parameters': {}, 'verdicts': ['lost'], 'tags': []}
+    >>> matcher_for(["parameters", "tags"], options)
+    {'test_id': 5, 'parameters': {'mode': 'promisc'}, 'verdicts': [], 'tags': ['linux']}
     """
-    return {
-        dimension: EMPTY_BY_DIMENSION[dimension]
-        for dimension in MATCH_DIMENSIONS
-        if dimension not in match
+    test = options["tests"][0]
+    captured: dict[str, Any] = {
+        "parameters": dict(test.get("parameters") or {}),
+        "verdicts": sorted(test.get("verdicts") or []),
+        "tags": sorted((options.get("tags") or {}).get("default") or []),
     }
+    matcher: dict[str, Any] = {"test_id": int(test["test_id"])}
+    for dimension in MATCH_DIMENSIONS:
+        matcher[dimension] = (
+            captured[dimension] if dimension in match else EMPTY_BY_DIMENSION[dimension]
+        )
+    return matcher
+
+
+def classify_options(
+    base_url: str,
+    result_id: int,
+    cookie_jar: Path,
+    fetch: Any,
+    cache: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """What a rule classifying ``result_id`` may contain, per the backend.
+
+    The endpoint groups the results by test; with one result there is exactly
+    one group, and anything else means the instance disagrees with the pin.
+    """
+    key = f"classify-options:{result_id}"
+    if cache is not None and key in cache:
+        return cache[key]
+    options = fetch(
+        f"{base_url}/api/v2/results/classify/options/",
+        method="POST",
+        payload={"result_ids": [result_id]},
+        cookie_jar=cookie_jar,
+    )
+    tests = options.get("tests") if isinstance(options, dict) else None
+    if not tests or len(tests) != 1:
+        raise CliError(
+            f"result {result_id}: classify options named {len(tests or [])} tests "
+            "for a single result; expected exactly one"
+        )
+    if cache is not None:
+        cache[key] = options
+    return options
 
 
 def _param_strings(params: dict[str, Any]) -> set[str]:
@@ -289,25 +344,37 @@ def apply_classification(
             if issue.get("description"):
                 issue_payload["description"] = issue["description"]
 
+        # The bulk endpoint classifies a list of results under a list of
+        # categories, one rule per (test, category). A plan rule is one pin and
+        # one category, so both lists are singletons and exactly one rule comes
+        # back.
+        options = classify_options(base_url, result_id, cookie_jar, fetch, lookups)
         body = {
+            "result_ids": [result_id],
             "issue": issue_payload,
-            "category": rule["category"],
+            "categories": [rule["category"]],
             "expected": rule["expected"],
             "scope": rule["scope"],
-            "matcher": matcher_for(rule.get("match") or []),
+            "matchers": [matcher_for(rule.get("match") or [], options)],
         }
         response = fetch(
-            f"{base_url}/api/v2/results/{result_id}/classify/",
+            f"{base_url}/api/v2/results/classify/",
             method="POST",
             payload=body,
             cookie_jar=cookie_jar,
         )
+        rule_ids = response.get("rule_ids") or []
+        if len(rule_ids) != 1:
+            raise CliError(
+                f"rule {rule['id']!r}: classify returned {len(rule_ids)} rules for "
+                "one result and one category; expected exactly one"
+            )
         if not issue.get("issueId"):
             issue["issueId"] = int(response["issue_id"])
             issue["projectId"] = project_id
             issue["projectName"] = project_name
             created_issues += 1
-        rule["ruleId"] = int(response["rule_id"])
+        rule["ruleId"] = int(rule_ids[0])
         rule.setdefault("classifiedResultIds", []).append(result_id)
         created_rules += 1
         # Persist per rule, not once at the end. The ids are the only record

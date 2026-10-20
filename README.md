@@ -355,7 +355,7 @@ The ordering the flag creates is what makes the assertion meaningful:
 | Stage | What happens |
 |-------|--------------|
 | 1 | API-imported bundles are seeded. Their pinned leaves fail with authored verdicts. |
-| 2 | `--setup-classification` classifies one result per rule via `POST /results/{id}/classify/`. |
+| 2 | `--setup-classification` classifies one result per rule via the bulk `POST /results/classify/`, with the matcher read from `POST /results/classify/options/`. |
 | 3 | `--setup-classification` re-applies the active rules to every API-seeded run that carries pins, via `POST /runs/{id}/apply_rules/`, so those runs carry every stamp a rule matches and not just the one classified result. |
 | 4 | The Playwright suite imports the `+ui` bundles — runs generated before any rule existed. |
 | 5 | Bublik stamps them on import; the suite asserts the stamps. |
@@ -380,8 +380,9 @@ rules at two fixtures is rejected when the plan is validated.
 > already in the instance, so the *old* results stay, without the new authored
 > verdicts. `--setup-classification` refuses to classify one of those rather
 > than quietly building a broader rule than the plan asks for — a rule matching
-> on verdicts, handed a result with none, captures an empty list, and an empty
-> dimension is not applied, so it silently becomes test-only. Reset the stack
+> on verdicts, handed a result with none, would copy an empty list from the
+> classify options, and an empty dimension is not applied, so it silently
+> becomes test-only. Reset the stack
 > (`down --volumes`, then up and seed) after editing pins.
 
 > The same goes for an issue's `title`, `key` or `description`: they are sent

@@ -306,15 +306,50 @@ def test_the_manifest_carries_an_issue_description() -> None:
 # --------------------------------------------------------------------------
 
 
+_OPTIONS = {
+    "run_id": 7,
+    "tags": {"default": ["linux", "x86"], "allowed": ["linux", "x86", "lab"]},
+    "tests": [
+        {
+            "test_id": 5,
+            "test_name": "rx_mode",
+            "test_path": "net/rx_mode",
+            "result_ids": [42],
+            "parameters": {"mode": "promisc", "env": "lab"},
+            "verdicts": ["Packet lost"],
+        }
+    ],
+}
+
+
 def test_matcher_suppresses_every_dimension_for_a_test_only_rule() -> None:
-    assert matcher_for([]) == {"parameters": {}, "verdicts": [], "tags": []}
+    """The bulk endpoint takes every dimension; an empty one does not restrict."""
+    assert matcher_for([], _OPTIONS) == {
+        "test_id": 5,
+        "parameters": {},
+        "verdicts": [],
+        "tags": [],
+    }
 
 
-def test_matcher_omits_the_dimensions_it_keeps() -> None:
-    """An omitted key tells the backend to capture that dimension from the result."""
-    assert matcher_for(["verdicts"]) == {"parameters": {}, "tags": []}
-    assert matcher_for(["parameters", "verdicts"]) == {"tags": []}
-    assert matcher_for(["parameters", "verdicts", "tags"]) == {}
+def test_matcher_fills_the_dimensions_it_keeps_from_the_options() -> None:
+    """What the single-result endpoint captured itself now comes from options.
+
+    Parameters and verdicts are the result's own; tags are the run's default
+    (important) ones, not every allowed tag.
+    """
+    assert matcher_for(["verdicts"], _OPTIONS) == {
+        "test_id": 5,
+        "parameters": {},
+        "verdicts": ["Packet lost"],
+        "tags": [],
+    }
+    assert matcher_for(["parameters", "verdicts", "tags"], _OPTIONS) == {
+        "test_id": 5,
+        "parameters": {"mode": "promisc", "env": "lab"},
+        "verdicts": ["Packet lost"],
+        "tags": ["linux", "x86"],
+    }
 
 
 # --------------------------------------------------------------------------
@@ -531,8 +566,10 @@ def test_apply_classification_creates_then_closes(tmp_path: Path) -> None:
         calls.append((method, url, payload))
         if "results/?" in url:
             return {"results": [_row(42)]}
+        if url.endswith("/classify/options/"):
+            return _OPTIONS
         if url.endswith("/classify/"):
-            return {"issue_id": 3, "rule_id": 9}
+            return {"issue_id": 3, "rule_ids": [9]}
         if url.endswith("/issues/close/"):
             return {"requested": 1, "updated": 1, "unchanged": 0, "not_found": 0}
         return {}
@@ -544,6 +581,22 @@ def test_apply_classification_creates_then_closes(tmp_path: Path) -> None:
     assert classification["issues"][0]["issueId"] == 3
     assert classification["rules"][0]["ruleId"] == 9
     assert classification["rules"][0]["classifiedResultIds"] == [42]
+    # Classify is a collection action too: the result ids go in the body, the
+    # matcher is sent in full (nothing is captured server-side any more), and
+    # one category yields one rule.
+    classify = [c for c in calls if c[1] == "http://host/api/v2/results/classify/"]
+    assert len(classify) == 1
+    body = classify[0][2]
+    assert body["result_ids"] == [42]
+    assert body["categories"] == ["known-issue"]
+    assert body["matchers"] == [
+        {"test_id": 5, "parameters": {}, "verdicts": [], "tags": []}
+    ]
+    assert (
+        "POST",
+        "http://host/api/v2/results/classify/options/",
+        {"result_ids": [42]},
+    ) in calls
     # close is a collection action, taking the ids in the body.
     assert ("POST", "http://host/api/v2/issues/close/", {"ids": [3]}) in calls
 
@@ -569,9 +622,11 @@ def test_the_classify_payload_carries_the_results_project(tmp_path: Path) -> Non
     ) -> dict:
         if "results/?" in url:
             return {"results": [_row(42, project_id=5)]}
+        if url.endswith("/classify/options/"):
+            return _OPTIONS
         if url.endswith("/classify/"):
             bodies.append(payload or {})
-            return {"issue_id": 3, "rule_id": 9}
+            return {"issue_id": 3, "rule_ids": [9]}
         if url.endswith("/issues/3/"):
             return {"state": "open"}
         return {}
@@ -610,9 +665,11 @@ def test_the_classify_payload_carries_the_issue_description(tmp_path: Path) -> N
     ) -> dict:
         if "results/?" in url:
             return {"results": [_row(42)]}
+        if url.endswith("/classify/options/"):
+            return _OPTIONS
         if url.endswith("/classify/"):
             bodies.append(payload or {})
-            return {"issue_id": 3, "rule_id": 9}
+            return {"issue_id": 3, "rule_ids": [9]}
         return {}
 
     manifest, path = _classify_manifest(tmp_path)
@@ -637,9 +694,11 @@ def test_an_issue_without_a_description_omits_the_key(tmp_path: Path) -> None:
     ) -> dict:
         if "results/?" in url:
             return {"results": [_row(42)]}
+        if url.endswith("/classify/options/"):
+            return _OPTIONS
         if url.endswith("/classify/"):
             bodies.append(payload or {})
-            return {"issue_id": 3, "rule_id": 9}
+            return {"issue_id": 3, "rule_ids": [9]}
         return {}
 
     manifest, path = _classify_manifest(tmp_path)
@@ -661,8 +720,10 @@ def test_ids_survive_a_failure_partway_through(tmp_path: Path) -> None:
     def fetch(url: str, *, method: str = "GET", **_: object) -> dict:
         if "results/?" in url:
             return {"results": [_row(42)]}
+        if url.endswith("/classify/options/"):
+            return _OPTIONS
         if url.endswith("/classify/"):
-            return {"issue_id": 3, "rule_id": 9}
+            return {"issue_id": 3, "rule_ids": [9]}
         raise CliError("boom")
 
     manifest, path = _classify_manifest(tmp_path)
@@ -1106,8 +1167,10 @@ class _Instance:
             return [{"id": 4, "name": "tsf/other"}, {"id": 5, "name": "tsf/net-drv"}]
         if "results/?" in url:
             return {"results": [_row(42, project_id=5)]}
+        if url.endswith("/classify/options/"):
+            return _OPTIONS
         if url.endswith("/classify/"):
-            return {"issue_id": 3, "rule_id": 9}
+            return {"issue_id": 3, "rule_ids": [9]}
         if url.endswith("/api/v2/issues/") and method == "POST":
             return {"id": 11, "project": 5, "project_name": "tsf/net-drv"}
         if url.endswith("/deactivate/") or url.endswith("/close/"):
@@ -1160,7 +1223,8 @@ def test_setup_creates_then_deactivates_then_closes(tmp_path: Path) -> None:
 
     assert instance.posts() == [
         ("/api/v2/issues/", ANY),
-        ("/api/v2/results/42/classify/", ANY),
+        ("/api/v2/results/classify/options/", {"result_ids": [42]}),
+        ("/api/v2/results/classify/", ANY),
         ("/api/v2/issue_rules/deactivate/", {"ids": [9]}),
         ("/api/v2/issues/close/", {"ids": [11]}),
         # Last: the endpoint applies only active rules of open issues and never
@@ -1335,7 +1399,8 @@ def test_a_manifest_from_before_both_fields_still_validates_and_applies(
     apply_classification(manifest, path, "http://host", Path("jar"), instance)
 
     assert [url for url, _ in instance.posts()] == [
-        "/api/v2/results/42/classify/",
+        "/api/v2/results/classify/options/",
+        "/api/v2/results/classify/",
         "/api/v2/runs/7/apply_rules/",
     ]
 
