@@ -507,29 +507,32 @@ bublik-e2e playwright \
   on, else those named `auth`, `setup`, `import` or `teardown`, or whose every
   test is in a `*.setup.*` file). Each spec file is a package, each
   `describe` a nested package, and each test a test with the parameter
-  `browser`. Playwright runs the browsers one after the other, and Bublik
-  follows a live run along its plan, so the plan follows them: under the root
-  comes each browser's block of file packages, in the order the browsers ran.
-  The blocks name their packages alike, so each test is one Bublik test with
-  an iteration per browser (they differ in the `browser` parameter only):
+  `browser`. A test run in several browsers is one Bublik test with an
+  iteration per browser: its runs sit side by side under its package, in the
+  order the browsers ran, since Bublik groups a test's iterations only from
+  adjacent results of one package (they differ in the `browser` parameter
+  only):
 
   ```
   bublik-ui-e2e
-  ├── runs-page          (chromium)
-  │   └── lists the runs of a day   browser=chromium
-  ├── dashboard          (chromium) …
-  ├── runs-page          (firefox)
-  │   └── lists the runs of a day   browser=firefox
-  ├── dashboard          (firefox) …
-  └── runs-page, dashboard (webkit) …
+  ├── runs-page
+  │   ├── lists the runs of a day   browser=chromium
+  │   ├── lists the runs of a day   browser=firefox
+  │   ├── lists the runs of a day   browser=webkit
+  │   └── exports the runs as CSV   browser=chromium …
+  └── dashboard …
   ```
 
   Spec tags become the
   test's requirements. A test Playwright counts as unexpected is unexpected in
   Bublik, with the first line of each error as a verdict; a flaky test passes
   with the verdict `flaky: passed on retry N`. Siblings are laid end to end in
-  the order they ran, since Bublik's timestamp repair shifts overlapping ones
-  by a day.
+  the order they ran (a test's runs where the first of them ran), since
+  Bublik's timestamp repair shifts overlapping ones by a day. Playwright runs
+  the browsers one after the other, so with several the run's timestamps keep
+  each result's duration and order, not the wall clock; and the live import
+  (below), which follows the plan in order, moves as the last browser goes
+  through the suite, showing what the earlier ones did then.
 - **What was tested.** Read from environment variables under the `--facts-env`
   prefix (default `SWEEP_`, as a bublik-preview Sweep hands them to its publish
   Job; `--facts-env ""` reads a Job's own):
@@ -604,10 +607,10 @@ the live protocol does not carry. It takes two pieces in the test Job:
    file first, then finishes the run.
 
 `--out` records `{"run", "url", "start_timestamp", "cfg", "plan", "plan_ids",
-"nodes": {key: {"id", "parent", "tin", "plan_id"}}}`, keyed `pkg:<path>` (the
-root), `pkg:<browser>/<path>` and `test:<browser>/<path>@<line>:<column>` (not
-the Playwright test id: the json report keeps only the first project's id of a
-test run in several): a source import merges into a live run only when
+"nodes": {key: {"id", "parent", "tin", "plan_id"}}}`, keyed `pkg:<path>` and
+`test:<browser>/<path>@<line>:<column>` (not the Playwright test id: the json
+report keeps only the first project's id of a test run in several): a source
+import merges into a live run only when
 it carries the same key metas and every node the same sequence number, parent
 and tin. Live import never fails the Job: when Bublik cannot start or take the
 run, the streamer says so and writes `{"run": null}`, and the publish side

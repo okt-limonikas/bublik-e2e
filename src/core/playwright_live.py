@@ -2,18 +2,21 @@
 
 ``playwright_live_reporter.mjs`` writes the run as JSON lines: each browser
 project's suite tree when it begins, each test's final result, the end. The
-browsers make one run, a block of the plan each, in the order they run, as
-the converter makes the bundle (see ``core.playwright_bundle``). This module
-follows that file and turns it into the live protocol of ``core.live``:
-``init`` with the run's metas and plan, ``feed`` batches of ``test_start`` /
-``test_end``, ``finish``.
+browsers make one run, each test a test per browser side by side in the
+plan, as the converter lays out the bundle (see ``core.playwright_bundle``).
+This module follows that file and turns it into the live protocol of
+``core.live``: ``init`` with the run's metas and plan, ``feed`` batches of
+``test_start`` / ``test_end``, ``finish``.
 
 Bublik follows a live run along its plan and cannot go back: a ``test_start``
 must come in plan order (it may skip ahead over what never ran), inside its
 parent, and every node gets the next sequence number. Playwright settles a test
 that fails only after its retries, which run once the rest of its file did, so
 a result that comes early waits for the ones before it. Nothing is streamed
-until it is final, so what Bublik shows never has to change.
+until it is final, so what Bublik shows never has to change. Playwright runs
+the browsers one after the other, so with several a test's run in the first
+browser waits for its runs in the others: the stream moves as the last
+browser goes through the suite, and shows what the earlier ones did then.
 
 When the suite ends, the Sweep's publish Job imports the whole bundle, which
 merges into the live run only if it carries the same START_TIMESTAMP and CFG,
@@ -101,17 +104,33 @@ class Project:
 def build_plan(
     projects: list[Project], ts_name: str
 ) -> tuple[PlanNode, dict[str, str]]:
-    """The run's tree as the converter names it, in the order Playwright runs
-    it: browsers as listed, each a block of its files as listed, then specs
-    and describes by line and column. Also each Playwright test id's key."""
+    """The run's tree as the converter lays it out: files as listed, specs
+    and describes by line and column, each spec a test per browser side by
+    side in the order the browsers are listed. Also each Playwright test id's
+    key."""
     keys: dict[str, str] = {}
+    root = PlanNode(package_key([ts_name]), bublik_name(ts_name), "pkg", [ts_name])
+    # Where a node sorts among its siblings: a file as listed, a describe or
+    # a test by line and column, a test's browsers in their order.
+    places: dict[int, tuple[int, int, int]] = {}
 
-    def suite_node(
-        suite: dict[str, Any], path: list[str], name: str, browser: str
-    ) -> PlanNode | None:
-        node_path = [*path, name]
+    def add_suite(
+        parent: PlanNode, suite: dict[str, Any], name: str, rank: int, browser: str
+    ) -> None:
+        node_path = [*parent.path, name]
+        node = next(
+            (c for c in parent.children if c.type == "pkg" and c.path == node_path),
+            None,
+        )
+        if node is None:
+            node = PlanNode(package_key(node_path), bublik_name(name), "pkg", node_path)
+            places[id(node)] = (
+                (len(parent.children), 0, 0)
+                if parent is root
+                else (suite.get("line", 0), suite.get("column", 0), 0)
+            )
+            parent.children.append(node)
         params = {"browser": browser}
-        entries: list[tuple[int, int, PlanNode]] = []
         for spec in suite.get("specs") or []:
             test_name = bublik_name(str(spec.get("title", "test")))
             test_path = [*node_path, test_name]
@@ -125,30 +144,24 @@ def build_plan(
                 hash=_hash(test_path, params),
                 params=params,
             )
-            entries.append((spec.get("line", 0), spec.get("column", 0), test))
+            places[id(test)] = (spec.get("line", 0), spec.get("column", 0), rank)
+            node.children.append(test)
         for nested in suite.get("suites") or []:
-            child = suite_node(
-                nested, node_path, str(nested.get("title", "suite")), browser
-            )
-            if child is not None:
-                entries.append((nested.get("line", 0), nested.get("column", 0), child))
-        if not entries:
-            return None
-        entries.sort(key=lambda entry: (entry[0], entry[1]))
-        node = PlanNode(
-            package_key(node_path, browser), bublik_name(name), "pkg", node_path
-        )
-        node.children = [entry[2] for entry in entries]
-        return node
+            add_suite(node, nested, str(nested.get("title", "suite")), rank, browser)
 
-    root = PlanNode(package_key([ts_name]), bublik_name(ts_name), "pkg", [ts_name])
-    root.children = [
-        node
-        for project in projects
-        for suite in project.suites
-        if (node := suite_node(suite, [ts_name], _package_name(suite), project.name))
-        is not None
-    ]
+    for rank, project in enumerate(projects):
+        for suite in project.suites:
+            add_suite(root, suite, _package_name(suite), rank, project.name)
+
+    def settle(node: PlanNode) -> None:
+        for child in node.children:
+            settle(child)
+        node.children = sorted(
+            (c for c in node.children if c.type == "test" or c.children),
+            key=lambda child: places[id(child)],
+        )
+
+    settle(root)
     counter = 0
 
     def number(node: PlanNode, parent: PlanNode | None) -> None:

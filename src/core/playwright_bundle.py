@@ -3,12 +3,12 @@
 One bundle is one Playwright run, in one browser or several: the Playwright
 projects named after the browsers, every spec file a package, every
 ``describe`` a nested package, every test a test with the parameter
-``browser``. Browsers run one after the other, so under the root comes each
-browser's block of file packages in the order they ran; the blocks name their
-packages alike, so in Bublik each test is one test with an iteration per
-browser. What the run was tested against (the preview, its deployment, each
-repository's revision, branch and PR) comes from facts in the environment, as
-bublik-preview hands them to a Job.
+``browser``. A test run in several browsers is one Bublik test with an
+iteration per browser: its runs sit side by side under its package, in the
+order the browsers ran, since Bublik groups a test's iterations only from
+adjacent results of one package. What the run was tested against (the
+preview, its deployment, each repository's revision, branch and PR) comes
+from facts in the environment, as bublik-preview hands them to a Job.
 """
 
 from __future__ import annotations
@@ -450,12 +450,15 @@ def convert(
     """Build the run's tree from ``report`` for the browsers ``facts`` names
     (every one but the setup projects, when it names none).
 
-    Each browser is a block of file packages under the root, in the order the
-    browsers ran; inside a block siblings are ordered by when they ran. All of
-    them are laid end to end: Bublik's timestamp repair on import shifts any
-    sibling that starts before the previous one finished by a whole day, and
-    refuses the run if that is not enough. With ``live``, they are ordered and
-    numbered as the live stream numbered them, and the plan is the one it
+    One tree whatever the browsers: a test's run in each browser sits beside
+    the others under its package, in the order the browsers ran. Siblings are
+    ordered by when they ran (a test's runs by the first of them) and laid
+    end to end: Bublik's timestamp repair on import shifts any sibling that
+    starts before the previous one finished by a whole day, and refuses the
+    run if that is not enough. With several browsers that gives up the wall
+    clock from the second browser on: each run keeps its duration and its
+    place in the order, not the time it ran. With ``live``, they are ordered
+    and numbered as the live stream numbered them, and the plan is the one it
     sent.
     """
     if not isinstance(report, dict) or not isinstance(report.get("suites"), list):
@@ -503,34 +506,34 @@ def convert(
         )
         return node
 
-    def suite_node(
-        suite: dict[str, Any], path: list[str], name: str, browser: str
-    ) -> Node | None:
+    def suite_node(suite: dict[str, Any], path: list[str], name: str) -> Node | None:
         node_path = [*path, name]
-        entries: list[tuple[int, int, Node]] = []
+        entries: list[tuple[int, int, int, Node]] = []
         for spec in suite.get("specs") or []:
-            child = spec_node(spec, node_path, browser)
-            if child is not None:
-                entries.append((spec.get("line", 0), spec.get("column", 0), child))
+            for rank, browser in enumerate(browsers):
+                child = spec_node(spec, node_path, browser)
+                if child is not None:
+                    child["_rank"] = rank
+                    entries.append(
+                        (spec.get("line", 0), spec.get("column", 0), rank, child)
+                    )
         for nested in suite.get("suites") or []:
-            child = suite_node(
-                nested, node_path, str(nested.get("title", "suite")), browser
-            )
+            child = suite_node(nested, node_path, str(nested.get("title", "suite")))
             if child is not None:
-                entries.append((nested.get("line", 0), nested.get("column", 0), child))
+                entries.append(
+                    (nested.get("line", 0), nested.get("column", 0), 0, child)
+                )
         if not entries:
             return None
-        entries.sort(key=lambda entry: (entry[0], entry[1]))
-        return _package(name, node_path, [entry[2] for entry in entries], browser)
+        entries.sort(key=lambda entry: entry[:3])
+        return _package(name, node_path, [entry[3] for entry in entries])
 
     ts_name = facts.ts_name
-    files = []
-    for rank, browser in enumerate(browsers):
-        for suite in report["suites"]:
-            node = suite_node(suite, [ts_name], _package_name(suite), browser)
-            if node is not None:
-                node["_rank"] = rank
-                files.append(node)
+    files = [
+        node
+        for suite in report["suites"]
+        if (node := suite_node(suite, [ts_name], _package_name(suite))) is not None
+    ]
     if not files:
         raise CliError(f"the report has no test of {', '.join(browsers)}")
     root = _package(ts_name, [ts_name], files)
@@ -548,10 +551,20 @@ def convert(
         return entry["id"] if entry else float("inf")
 
     def order(node: Node) -> None:
-        # A browser's block stays whole, in the order the browsers ran.
-        node["iters"].sort(
-            key=lambda child: (child.get("_rank", 0), live_id(child), earliest(child))
-        )
+        # A test's browser runs stay together, where the first of them ran,
+        # in the order the browsers ran.
+        first: dict[str, float] = {}
+        for child in node["iters"]:
+            if child["type"] == "test":
+                first[child["name"]] = min(
+                    first.get(child["name"], float("inf")), earliest(child)
+                )
+
+        def key(child: Node) -> tuple[float, float, int]:
+            when = first[child["name"]] if child["type"] == "test" else earliest(child)
+            return (live_id(child), when, child.get("_rank", 0))
+
+        node["iters"].sort(key=key)
         for child in node["iters"]:
             order(child)
 
@@ -608,9 +621,9 @@ def test_key(browser: str, path: list[str], spec: dict[str, Any]) -> str:
     return f"test:{browser}/{'/'.join(path)}@{where}"
 
 
-def package_key(path: list[str], browser: str = "") -> str:
-    """A package's key: the root's alone, a browser's block's under it."""
-    return "pkg:" + (f"{browser}/" if browser else "") + "/".join(path)
+def package_key(path: list[str]) -> str:
+    """A package's key: its path."""
+    return "pkg:" + "/".join(path)
 
 
 def _walk(node: Node):
@@ -673,9 +686,7 @@ def bublik_name(title: str) -> str:
     return title[: MAX_NAME - 10].rstrip() + "~" + digest
 
 
-def _package(
-    name: str, path: list[str], children: list[Node], browser: str = ""
-) -> Node:
+def _package(name: str, path: list[str], children: list[Node]) -> Node:
     title, name = name, bublik_name(name)
     return {
         "name": name,
@@ -690,7 +701,7 @@ def _package(
         "path": path,
         "path_str": "/".join(path),
         "iters": children,
-        "_key": package_key(path, browser),
+        "_key": package_key(path),
     }
 
 

@@ -449,13 +449,15 @@ def test_a_run_of_several_browsers_is_one_run_with_an_iteration_per_browser(
     conversion = convert(report, multi_facts())
 
     assert conversion.browser == "chromium,firefox,webkit"
-    blocks = [
-        (n["name"], n["iters"][0]["params"]["browser"])
-        for n in conversion.root["iters"]
-    ]
-    files = ["alpha", "beta"]
-    assert [name for name, _ in blocks] == files * 3
-    assert [browser for _, browser in blocks] == [b for b in BROWSERS for _ in files]
+    assert [n["name"] for n in conversion.root["iters"]] == ["alpha", "beta"]
+    # Each test's three runs side by side under its package, in the order
+    # the browsers ran: Bublik shows them as the test's iterations.
+    for package in _packages(conversion.root):
+        runs = [c for c in package["iters"] if c["type"] == "test"]
+        assert len(runs) % 3 == 0, package["name"]
+        for i in range(0, len(runs), 3):
+            assert len({t["name"] for t in runs[i : i + 3]}) == 1
+            assert [t["params"]["browser"] for t in runs[i : i + 3]] == BROWSERS
     tests = conversion.tests()
     by_name: dict[str, list[dict[str, Any]]] = {}
     for test in tests:
@@ -482,6 +484,13 @@ def test_a_run_of_several_browsers_is_one_run_with_an_iteration_per_browser(
     assert starts == sorted(starts)
 
 
+def _packages(node: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    if node["type"] == "pkg":
+        yield node
+        for child in node["iters"]:
+            yield from _packages(child)
+
+
 def test_several_browsers_stream_as_one_run_and_the_bundle_merges_into_it(
     tmp_path: Path, live: tuple[FakeLive, str]
 ) -> None:
@@ -506,7 +515,7 @@ def test_several_browsers_stream_as_one_run_and_the_bundle_merges_into_it(
     browsers = [
         dict(e["params"])["browser"] for e in starts if e["node_type"] == "test"
     ]
-    assert browsers == [b for b in BROWSERS for _ in range(len(browsers) // 3)]
+    assert browsers == BROWSERS * (len(browsers) // 3)
 
     info = LiveInfo.load(out)
     conversion = convert(report, multi_facts(), info)
