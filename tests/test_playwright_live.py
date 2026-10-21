@@ -164,7 +164,8 @@ def test_a_run_streams_in_plan_order_and_records_its_numbering(
     assert metas["TEST_RUN_URL"]["value"] == "http://preview.local/check-runs/7"
     assert {"name": "browser", "value": "chromium"} in fake.init["tags"]
     check_protocol(fake.init, fake.feed)
-    assert fake.finish is not None
+    # The suite ended with a failure: so does the run.
+    assert fake.finish is not None and fake.finish["status"] == "ERROR"
     tests = [
         e for e in fake.feed if e["type"] == "test_start" and e["node_type"] == "test"
     ]
@@ -272,7 +273,8 @@ def test_a_stop_without_an_end_streams_what_was_written_and_finishes(
 
     check_protocol(fake.init, fake.feed)
     assert len([e for e in fake.feed if e.get("node_type") == "test"]) == 3
-    assert fake.finish is not None
+    # Stopped before its end (a cancelled job): the run is interrupted.
+    assert fake.finish is not None and fake.finish["status"] == "INTERRUPTED"
 
 
 runner = CliRunner()

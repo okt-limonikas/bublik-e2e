@@ -604,7 +604,12 @@ the live protocol does not carry. It takes two pieces in the test Job:
    Tests that never ran are skipped over. The run's metas are the bundle's,
    with `RUN_STATUS=RUNNING` and no `FINISH_TIMESTAMP`; the facts are the Job's
    own variables (`--facts-env ""`). On SIGTERM it reads what is left of the
-   file first, then finishes the run.
+   file first, then finishes the run. The run ends as Playwright's end
+   status says: `passed` as `DONE`, `failed` or `timedout` as `ERROR`,
+   `interrupted` as `INTERRUPTED`; stopped before the end event (the Job was
+   cancelled and killed), it ends `INTERRUPTED`. A Bublik whose `finish`
+   takes no status (before ts-factory/bublik learnt it) ends every run
+   `DONE`.
 
 `--out` records `{"run", "url", "start_timestamp", "cfg", "plan", "plan_ids",
 "nodes": {key: {"id", "parent", "tin", "plan_id"}}}`, keyed `pkg:<path>` and

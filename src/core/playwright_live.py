@@ -218,6 +218,21 @@ def _epoch(value: str | None) -> float | None:
 
 Post = Callable[[str, Any], Any]
 
+#: The RUN_STATUS a live run ends with, by Playwright's end status. A Bublik
+#: before finish took a status ends every run DONE.
+RUN_STATUS_AT_END = {
+    "passed": "DONE",
+    "failed": "ERROR",
+    "timedout": "ERROR",
+    "interrupted": "INTERRUPTED",
+}
+
+
+def run_status_at_end(status: str | None) -> str:
+    """``status`` as a RUN_STATUS; none, a suite stopped before its end, is
+    INTERRUPTED."""
+    return RUN_STATUS_AT_END.get(status or "", "INTERRUPTED")
+
 
 class LiveStream:
     """One run's live import, fed the reporter's events in order."""
@@ -278,7 +293,7 @@ class LiveStream:
                 self.results[key] = dict(event.get("test") or {})
                 self._advance(at_end=False)
         elif kind == "end":
-            self.end(_epoch(event.get("time")))
+            self.end(_epoch(event.get("time")), status=str(event.get("status") or ""))
         if self.batch and self.clock() - self.last_flush >= self.flush_every:
             self.flush()
 
@@ -449,7 +464,9 @@ class LiveStream:
             self.broken = True
         self.batch.clear()
 
-    def end(self, ts: float | None = None) -> None:
+    def end(self, ts: float | None = None, status: str | None = None) -> None:
+        """End the run: as Playwright's end ``status`` says, or interrupted
+        when the suite was stopped before its end (no status)."""
         if self.ended:
             return
         self.ended = True
@@ -464,7 +481,7 @@ class LiveStream:
             return
         url = f"{self.base_url}{LIVE_API}/finish/?{urllib.parse.urlencode({'run': self.run})}"
         try:
-            self.post(url, {"ts": self._ts(ts)})
+            self.post(url, {"ts": self._ts(ts), "status": run_status_at_end(status)})
         except CliError as exc:
             # Every event got there: the publish Job's import still merges.
             self.warn(f"live import could not finish the run: {exc}")
