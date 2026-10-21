@@ -1,7 +1,9 @@
 """Stream a running Playwright suite into Bublik over its live-import API.
 
-``playwright_live_reporter.mjs`` writes the run as JSON lines: the browser's
-suite tree when it begins, each test's final result, the end. This module
+``playwright_live_reporter.mjs`` writes the run as JSON lines: each browser
+project's suite tree when it begins, each test's final result, the end. The
+browsers make one run, a block of the plan each, in the order they run, as
+the converter makes the bundle (see ``core.playwright_bundle``). This module
 follows that file and turns it into the live protocol of ``core.live``:
 ``init`` with the run's metas and plan, ``feed`` batches of ``test_start`` /
 ``test_end``, ``finish``.
@@ -88,24 +90,35 @@ class PlanNode:
         return list(reversed(chain))
 
 
-def build_plan(suites: list[dict[str, Any]], browser: str, ts_name: str) -> PlanNode:
-    """The run's tree as the converter names it, in the order Playwright runs
-    it: files as listed, then specs and describes by line and column."""
-    params = {"browser": browser}
+@dataclass
+class Project:
+    """A browser's Playwright project as the reporter's begin event lists it."""
 
-    def package(name: str, path: list[str]) -> PlanNode:
-        return PlanNode(package_key(path), bublik_name(name), "pkg", path)
+    name: str
+    suites: list[dict[str, Any]]
+
+
+def build_plan(
+    projects: list[Project], ts_name: str
+) -> tuple[PlanNode, dict[str, str]]:
+    """The run's tree as the converter names it, in the order Playwright runs
+    it: browsers as listed, each a block of its files as listed, then specs
+    and describes by line and column. Also each Playwright test id's key."""
+    keys: dict[str, str] = {}
 
     def suite_node(
-        suite: dict[str, Any], path: list[str], name: str
+        suite: dict[str, Any], path: list[str], name: str, browser: str
     ) -> PlanNode | None:
         node_path = [*path, name]
+        params = {"browser": browser}
         entries: list[tuple[int, int, PlanNode]] = []
         for spec in suite.get("specs") or []:
             test_name = bublik_name(str(spec.get("title", "test")))
             test_path = [*node_path, test_name]
+            key = test_key(browser, test_path, spec)
+            keys[str(spec.get("id") or "")] = key
             test = PlanNode(
-                test_key(spec),
+                key,
                 test_name,
                 "test",
                 test_path,
@@ -114,21 +127,27 @@ def build_plan(suites: list[dict[str, Any]], browser: str, ts_name: str) -> Plan
             )
             entries.append((spec.get("line", 0), spec.get("column", 0), test))
         for nested in suite.get("suites") or []:
-            child = suite_node(nested, node_path, str(nested.get("title", "suite")))
+            child = suite_node(
+                nested, node_path, str(nested.get("title", "suite")), browser
+            )
             if child is not None:
                 entries.append((nested.get("line", 0), nested.get("column", 0), child))
         if not entries:
             return None
         entries.sort(key=lambda entry: (entry[0], entry[1]))
-        node = package(name, node_path)
+        node = PlanNode(
+            package_key(node_path, browser), bublik_name(name), "pkg", node_path
+        )
         node.children = [entry[2] for entry in entries]
         return node
 
-    root = package(ts_name, [ts_name])
+    root = PlanNode(package_key([ts_name]), bublik_name(ts_name), "pkg", [ts_name])
     root.children = [
         node
-        for suite in suites
-        if (node := suite_node(suite, [ts_name], _package_name(suite))) is not None
+        for project in projects
+        for suite in project.suites
+        if (node := suite_node(suite, [ts_name], _package_name(suite), project.name))
+        is not None
     ]
     counter = 0
 
@@ -145,7 +164,25 @@ def build_plan(suites: list[dict[str, Any]], browser: str, ts_name: str) -> Plan
             node.last_test = node.children[-1].last_test
 
     number(root, None)
-    return root
+    return root, keys
+
+
+def begin_projects(event: Mapping[str, Any], browsers: list[str]) -> list[Project]:
+    """The projects a begin event lists, narrowed to ``browsers`` if any; an
+    event of the reporter's first, one-browser, shape is one project."""
+    if "projects" in event:
+        listed = [
+            Project(str(p.get("project") or ""), list(p.get("suites") or []))
+            for p in event.get("projects") or []
+        ]
+    else:
+        listed = [
+            Project(str(event.get("browser") or ""), list(event.get("suites") or []))
+        ]
+    listed = [p for p in listed if p.name]
+    if browsers:
+        listed = [p for p in listed if p.name in browsers]
+    return listed
 
 
 def _walk(node: PlanNode) -> Iterable[PlanNode]:
@@ -186,7 +223,11 @@ class LiveStream:
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.facts = facts
-        self.browser = browser or facts.browser
+        named = browser or facts.browser
+        self.browsers = [b.strip() for b in named.split(",") if b.strip()]
+        # browser is the browsers streamed, comma-separated, once begun.
+        self.browser = ""
+        self.keys: dict[str, str] = {}
         self.interval = interval
         self.flush_every = flush_every
         self.post = post
@@ -216,24 +257,29 @@ class LiveStream:
 
     def handle(self, event: Mapping[str, Any]) -> None:
         kind = event.get("type")
-        if kind == "begin" and self.root is None:
+        if kind == "begin" and self.root is None and not self.broken:
             self._begin(event)
         elif kind == "test" and self.root is not None:
-            test = event.get("test") or {}
-            self.results[f"test:{event.get('id') or ''}"] = dict(test)
-            self._advance(at_end=False)
+            key = self.keys.get(str(event.get("id") or ""))
+            if key is not None:
+                self.results[key] = dict(event.get("test") or {})
+                self._advance(at_end=False)
         elif kind == "end":
             self.end(_epoch(event.get("time")))
         if self.batch and self.clock() - self.last_flush >= self.flush_every:
             self.flush()
 
     def _begin(self, event: Mapping[str, Any]) -> None:
-        self.browser = self.browser or str(event.get("browser") or "")
-        if not self.browser:
-            raise CliError("no browser: pass --browser or set JOB_BROWSER")
-        self.root = build_plan(
-            list(event.get("suites") or []), self.browser, self.facts.ts_name
-        )
+        projects = begin_projects(event, self.browsers)
+        if not projects:
+            among = f" among {', '.join(self.browsers)}" if self.browsers else ""
+            self.warn(
+                f"live import did not start: the run has no browser project{among}"
+            )
+            self.broken = True
+            return
+        self.browser = ",".join(p.name for p in projects)
+        self.root, self.keys = build_plan(projects, self.facts.ts_name)
         self.tests = [node for node in _walk(self.root) if node.type == "test"]
         begun = _epoch(event.get("time")) or time_module.time()
         self.last_ts = begun

@@ -1,12 +1,29 @@
 // A Playwright reporter that writes the run as it goes, one JSON line per
 // event, to the file BUBLIK_LIVE_EVENTS names (nothing without it), for
-// `bublik-e2e playwright-live` to stream into Bublik. It only records: the
-// browser's suite tree once the run begins, each test's final result in the
-// JSON reporter's shape, and the end.
+// `bublik-e2e playwright-live` to stream into Bublik. It only records: each
+// browser project's suite tree once the run begins, each test's final result
+// in the JSON reporter's shape, and the end. The browser projects are the
+// ones BUBLIK_LIVE_BROWSER or JOB_BROWSER list (comma-separated), else every
+// project no other one depends on (not a setup project).
 import fs from "node:fs";
 import path from "node:path";
 
-const browser = process.env.BUBLIK_LIVE_BROWSER || process.env.JOB_BROWSER || "";
+const named = (process.env.BUBLIK_LIVE_BROWSER || process.env.JOB_BROWSER || "")
+  .split(",")
+  .map((name) => name.trim())
+  .filter(Boolean);
+
+// The projects the run's browser projects are, in the config's order.
+export function browserProjects(config, named) {
+  const setup = new Set();
+  for (const project of config.projects) {
+    for (const dependency of project.dependencies || []) setup.add(dependency);
+    if (project.teardown) setup.add(project.teardown);
+  }
+  return config.projects
+    .map((project) => project.name)
+    .filter((name) => (named.length ? named.includes(name) : !setup.has(name)));
+}
 
 function relative(rootDir, location) {
   if (!location) return { file: "", line: 0, column: 0 };
@@ -70,6 +87,7 @@ export default class BublikLiveReporter {
   constructor() {
     this.file = process.env.BUBLIK_LIVE_EVENTS || "";
     this.rootDir = "";
+    this.browsers = [];
   }
 
   write(event) {
@@ -85,20 +103,26 @@ export default class BublikLiveReporter {
 
   onBegin(config, suite) {
     this.rootDir = config.rootDir;
-    const project = suite.suites.find((s) => s.project()?.name === browser);
-    const suites = project
-      ? project.suites.map((s) => serializeSuite(this.rootDir, s)).filter(Boolean)
-      : [];
-    this.write({ type: "begin", time: new Date().toISOString(), browser, suites });
+    this.browsers = browserProjects(config, named);
+    const projects = [];
+    for (const name of this.browsers) {
+      const project = suite.suites.find((s) => s.project()?.name === name);
+      const suites = project
+        ? project.suites.map((s) => serializeSuite(this.rootDir, s)).filter(Boolean)
+        : [];
+      if (suites.length) projects.push({ project: name, suites });
+    }
+    this.write({ type: "begin", time: new Date().toISOString(), projects });
   }
 
   onTestEnd(test, result) {
-    if (test.parent.project()?.name !== browser || !isFinal(test, result)) return;
+    const project = test.parent.project()?.name;
+    if (!this.browsers.includes(project) || !isFinal(test, result)) return;
     this.write({
       type: "test",
       id: test.id,
       test: {
-        projectName: browser,
+        projectName: project,
         expectedStatus: test.expectedStatus,
         status: test.outcome(),
         results: test.results.map(serializeResult),

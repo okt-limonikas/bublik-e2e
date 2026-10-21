@@ -1,11 +1,14 @@
 """Turn a Playwright JSON report into a Bublik run-log bundle.
 
-One bundle is one browser's run: the tests of the Playwright project named
-after the browser, every spec file a package, every ``describe`` a nested
-package, every test a test with the parameter ``browser``. What the run was
-tested against (the preview, its deployment, each repository's revision, branch
-and PR) comes from facts in the environment, as bublik-preview hands them to a
-Job.
+One bundle is one Playwright run, in one browser or several: the Playwright
+projects named after the browsers, every spec file a package, every
+``describe`` a nested package, every test a test with the parameter
+``browser``. Browsers run one after the other, so under the root comes each
+browser's block of file packages in the order they ran; the blocks name their
+packages alike, so in Bublik each test is one test with an iteration per
+browser. What the run was tested against (the preview, its deployment, each
+repository's revision, branch and PR) comes from facts in the environment, as
+bublik-preview hands them to a Job.
 """
 
 from __future__ import annotations
@@ -100,6 +103,8 @@ class RepoFacts:
 
 @dataclass
 class Facts:
+    # browser is the Playwright projects to convert, comma-separated; empty
+    # means every project in the report but the setup ones.
     browser: str = ""
     project: str = "bublik-preview"
     ts_name: str = "playwright"
@@ -155,7 +160,7 @@ def facts_from_env(env: Mapping[str, str], prefix: str) -> Facts:
             setattr(repo, attr, env.get(f"{source}{slot}_{suffix}", "") or "")
         repos.append(repo)
     return Facts(
-        browser=get("JOB_BROWSER"),
+        browser=get("JOB_BROWSER") or get("E2E_BROWSERS"),
         app=get("APP"),
         preview=get("PREVIEW_NAME"),
         preview_url=get("PREVIEW_FQDN") or get("PREVIEW_URL"),
@@ -244,6 +249,7 @@ class Conversion:
     root: Node
     leaves: dict[int, Leaf]
     plan: dict[str, Any]
+    # browser is the browsers converted, comma-separated, in the order they ran.
     browser: str
     live: LiveInfo | None = None
 
@@ -353,26 +359,112 @@ def _hash(path: list[str], params: dict[str, str]) -> str:
     return hashlib.md5(identity.encode(), usedforsecurity=False).hexdigest()
 
 
+#: Projects that only prepare the others (log in, import fixtures), when the
+#: report does not say which projects others depend on.
+SETUP_PROJECTS = {"auth", "setup", "import", "teardown"}
+_SETUP_FILE = re.compile(r"\.(setup|teardown)\.[cm]?[jt]sx?$")
+
+
+def _report_specs(report: dict[str, Any]):
+    """(file, spec) for every spec of the report."""
+
+    def walk(suite: dict[str, Any], file: str):
+        for spec in suite.get("specs") or []:
+            yield str(spec.get("file") or file), spec
+        for nested in suite.get("suites") or []:
+            yield from walk(nested, file)
+
+    for suite in report.get("suites") or []:
+        yield from walk(suite, str(suite.get("file") or suite.get("title") or ""))
+
+
+def setup_projects(report: dict[str, Any]) -> set[str]:
+    """The projects others depend on, as the report's config says; else the
+    ones named like setup projects or whose every test is in a setup file."""
+    projects = (report.get("config") or {}).get("projects") or []
+    named = {
+        dependency
+        for project in projects
+        for dependency in list(project.get("dependencies") or [])
+        + ([project["teardown"]] if project.get("teardown") else [])
+    }
+    if named:
+        return named
+    files: dict[str, set[bool]] = {}
+    for file, spec in _report_specs(report):
+        for test in spec.get("tests") or []:
+            files.setdefault(str(test.get("projectName")), set()).add(
+                bool(_SETUP_FILE.search(file))
+            )
+    return {
+        name
+        for name, setup in files.items()
+        if name.lower() in SETUP_PROJECTS or setup == {True}
+    }
+
+
+def browsers_of(report: dict[str, Any], facts: Facts) -> list[str]:
+    """The projects to convert, in the order they ran: the ones ``facts``
+    names, else every project of the report but the setup ones."""
+    order = {
+        str(project.get("name")): index
+        for index, project in enumerate(
+            (report.get("config") or {}).get("projects") or []
+        )
+    }
+    first: dict[str, float] = {}
+    for _, spec in _report_specs(report):
+        for test in spec.get("tests") or []:
+            name = str(test.get("projectName"))
+            starts = [_parse_ms(r.get("startTime")) for r in test.get("results") or []]
+            earliest = min((s for s in starts if s), default=float("inf"))
+            first[name] = min(first.get(name, float("inf")), earliest)
+    named = [b.strip() for b in facts.browser.split(",") if b.strip()]
+    if named:
+        missing = [b for b in named if b not in first]
+        if len(missing) == len(named):
+            raise CliError(
+                f"the report has no test of the Playwright project {', '.join(named)}"
+            )
+        for name in missing:
+            console.print(f"[yellow]warning:[/] the report has no test of {name!r}")
+        chosen = [b for b in named if b in first]
+    else:
+        setup = setup_projects(report)
+        chosen = [name for name in first if name not in setup]
+        if not chosen:
+            raise CliError("the report has no test of a browser project")
+    return sorted(
+        chosen,
+        key=lambda b: (
+            first[b],
+            order.get(b, len(order)),
+            named.index(b) if b in named else 0,
+        ),
+    )
+
+
 def convert(
     report: dict[str, Any], facts: Facts, live: LiveInfo | None = None
 ) -> Conversion:
-    """Build the run's tree from ``report`` for ``facts.browser``.
+    """Build the run's tree from ``report`` for the browsers ``facts`` names
+    (every one but the setup projects, when it names none).
 
-    Siblings are ordered by when they ran and laid end to end: Bublik's
-    timestamp repair on import shifts any sibling that starts before the
-    previous one finished by a whole day, and refuses the run if that is not
-    enough. With ``live``, they are ordered and numbered as the live stream
-    numbered them, and the plan is the one it sent.
+    Each browser is a block of file packages under the root, in the order the
+    browsers ran; inside a block siblings are ordered by when they ran. All of
+    them are laid end to end: Bublik's timestamp repair on import shifts any
+    sibling that starts before the previous one finished by a whole day, and
+    refuses the run if that is not enough. With ``live``, they are ordered and
+    numbered as the live stream numbered them, and the plan is the one it
+    sent.
     """
     if not isinstance(report, dict) or not isinstance(report.get("suites"), list):
         raise CliError("not a Playwright JSON report: it has no 'suites' list")
-    browser = facts.browser
-    if not browser:
-        raise CliError("no browser: pass --browser or set the JOB_BROWSER fact")
+    browsers = browsers_of(report, facts)
 
     leaves_by_node: dict[int, Leaf] = {}
 
-    def spec_node(spec: dict[str, Any], path: list[str]) -> Node | None:
+    def spec_node(spec: dict[str, Any], path: list[str], browser: str) -> Node | None:
         tests = [t for t in spec.get("tests") or [] if t.get("projectName") == browser]
         if not tests:
             return None
@@ -401,7 +493,7 @@ def convert(
             "path": node_path,
             "path_str": "/".join(node_path),
             "iters": [],
-            "_key": test_key(spec),
+            "_key": test_key(browser, node_path, spec),
         }
         leaves_by_node[id(node)] = Leaf(
             attempts=attempts,
@@ -411,30 +503,36 @@ def convert(
         )
         return node
 
-    def suite_node(suite: dict[str, Any], path: list[str], name: str) -> Node | None:
+    def suite_node(
+        suite: dict[str, Any], path: list[str], name: str, browser: str
+    ) -> Node | None:
         node_path = [*path, name]
         entries: list[tuple[int, int, Node]] = []
         for spec in suite.get("specs") or []:
-            child = spec_node(spec, node_path)
+            child = spec_node(spec, node_path, browser)
             if child is not None:
                 entries.append((spec.get("line", 0), spec.get("column", 0), child))
         for nested in suite.get("suites") or []:
-            child = suite_node(nested, node_path, str(nested.get("title", "suite")))
+            child = suite_node(
+                nested, node_path, str(nested.get("title", "suite")), browser
+            )
             if child is not None:
                 entries.append((nested.get("line", 0), nested.get("column", 0), child))
         if not entries:
             return None
         entries.sort(key=lambda entry: (entry[0], entry[1]))
-        return _package(name, node_path, [entry[2] for entry in entries])
+        return _package(name, node_path, [entry[2] for entry in entries], browser)
 
     ts_name = facts.ts_name
-    files = [
-        node
-        for suite in report["suites"]
-        if (node := suite_node(suite, [ts_name], _package_name(suite))) is not None
-    ]
+    files = []
+    for rank, browser in enumerate(browsers):
+        for suite in report["suites"]:
+            node = suite_node(suite, [ts_name], _package_name(suite), browser)
+            if node is not None:
+                node["_rank"] = rank
+                files.append(node)
     if not files:
-        raise CliError(f"the report has no test of the Playwright project {browser!r}")
+        raise CliError(f"the report has no test of {', '.join(browsers)}")
     root = _package(ts_name, [ts_name], files)
 
     def earliest(node: Node) -> float:
@@ -450,7 +548,10 @@ def convert(
         return entry["id"] if entry else float("inf")
 
     def order(node: Node) -> None:
-        node["iters"].sort(key=lambda child: (live_id(child), earliest(child)))
+        # A browser's block stays whole, in the order the browsers ran.
+        node["iters"].sort(
+            key=lambda child: (child.get("_rank", 0), live_id(child), earliest(child))
+        )
         for child in node["iters"]:
             order(child)
 
@@ -493,16 +594,23 @@ def convert(
             leaves[node["test_id"]] = leaves_by_node[id(node)]
     recompute_package_statuses(root)
     mark_unexpected_packages(root)
-    return Conversion(root=root, leaves=leaves, plan=plan, browser=browser, live=live)
+    return Conversion(
+        root=root, leaves=leaves, plan=plan, browser=",".join(browsers), live=live
+    )
 
 
-def test_key(spec: dict[str, Any]) -> str:
-    """How the live stream and the converter name a test: its Playwright id."""
-    return f"test:{spec.get('id') or ''}"
+def test_key(browser: str, path: list[str], spec: dict[str, Any]) -> str:
+    """How the live stream and the converter name a test: its project, path
+    and place in its file. (Not its Playwright id: the JSON report keeps one
+    spec per test with every project's run in it, and only the first
+    project's id.)"""
+    where = f"{spec.get('line', 0)}:{spec.get('column', 0)}"
+    return f"test:{browser}/{'/'.join(path)}@{where}"
 
 
-def package_key(path: list[str]) -> str:
-    return "pkg:" + "/".join(path)
+def package_key(path: list[str], browser: str = "") -> str:
+    """A package's key: the root's alone, a browser's block's under it."""
+    return "pkg:" + (f"{browser}/" if browser else "") + "/".join(path)
 
 
 def _walk(node: Node):
@@ -565,7 +673,9 @@ def bublik_name(title: str) -> str:
     return title[: MAX_NAME - 10].rstrip() + "~" + digest
 
 
-def _package(name: str, path: list[str], children: list[Node]) -> Node:
+def _package(
+    name: str, path: list[str], children: list[Node], browser: str = ""
+) -> Node:
     title, name = name, bublik_name(name)
     return {
         "name": name,
@@ -580,7 +690,7 @@ def _package(name: str, path: list[str], children: list[Node]) -> Node:
         "path": path,
         "path_str": "/".join(path),
         "iters": children,
-        "_key": package_key(path),
+        "_key": package_key(path, browser),
     }
 
 
@@ -760,7 +870,7 @@ def run_metas(
     items += [
         {"name": "CAMPAIGN_DATE", "value": start[:10]},
         {"name": "RUN_STATUS", "value": status},
-        {"name": "BROWSER", "value": browser},
+        {"name": _browser_key(browser).upper(), "value": browser},
     ]
 
     def label(name: str, value: str, type_: str | None = None) -> None:
@@ -793,8 +903,13 @@ def tags(conversion: Conversion, facts: Facts) -> dict[str, str]:
     return run_tags(facts, conversion.browser)
 
 
+def _browser_key(browser: str) -> str:
+    """``browser`` for one browser, ``browsers`` for a comma-separated list."""
+    return "browsers" if "," in browser else "browser"
+
+
 def run_tags(facts: Facts, browser: str) -> dict[str, str]:
-    out = {"browser": browser}
+    out = {_browser_key(browser): browser}
     if facts.preview:
         out["preview"] = facts.preview
     if facts.app:
@@ -890,6 +1005,7 @@ def _write(path: Path, payload: Any) -> None:
 def _strip_private(node: Node) -> None:
     node.pop("_shift_ms", None)
     node.pop("_key", None)
+    node.pop("_rank", None)
     for child in node.get("iters") or []:
         _strip_private(child)
 

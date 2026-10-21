@@ -361,10 +361,8 @@ def test_a_tests_log_tells_its_attempts_steps_and_errors(bundle: Path) -> None:
 def test_errors_are_refused_clearly(tmp_path: Path) -> None:
     with pytest.raises(CliError, match="not a Playwright JSON report"):
         convert({"tests": []}, facts())
-    with pytest.raises(CliError, match="no test of the Playwright project 'webkit'"):
+    with pytest.raises(CliError, match="no test of the Playwright project webkit"):
         convert(REPORT, facts("webkit"))
-    with pytest.raises(CliError, match="no browser"):
-        convert(REPORT, facts(""))
     long = facts()
     long.repos.append(RepoFacts(slot="s" * 70, sha="b" * 40))
     with pytest.raises(CliError, match="schema validation"):

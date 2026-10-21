@@ -488,9 +488,9 @@ bublik-e2e live basic --dry-run --output live.json
 
 ## Playwright results as a run
 
-`bublik-e2e playwright` turns one browser's Playwright run into a Bublik run.
-It reads the report of Playwright's `json` reporter and writes a bundle Bublik
-can import, and with `--import` imports it:
+`bublik-e2e playwright` turns a Playwright run, in one browser or several,
+into one Bublik run. It reads the report of Playwright's `json` reporter and
+writes a bundle Bublik can import, and with `--import` imports it:
 
 ```bash
 bublik-e2e playwright \
@@ -501,10 +501,30 @@ bublik-e2e playwright \
   --setup-project --summary summary.json
 ```
 
-- **The run.** The tests of the Playwright project named after the browser
-  (`--browser`, else the `JOB_BROWSER` fact); setup projects and other browsers
-  are left out. Each spec file is a package, each `describe` a nested package,
-  and each test a test with the parameter `browser`. Spec tags become the
+- **The run.** The tests of the Playwright projects named after the browsers
+  (`--browser`, comma-separated, else the `JOB_BROWSER` or `E2E_BROWSERS` fact,
+  else every project of the report but the setup ones: those others depend
+  on, else those named `auth`, `setup`, `import` or `teardown`, or whose every
+  test is in a `*.setup.*` file). Each spec file is a package, each
+  `describe` a nested package, and each test a test with the parameter
+  `browser`. Playwright runs the browsers one after the other, and Bublik
+  follows a live run along its plan, so the plan follows them: under the root
+  comes each browser's block of file packages, in the order the browsers ran.
+  The blocks name their packages alike, so each test is one Bublik test with
+  an iteration per browser (they differ in the `browser` parameter only):
+
+  ```
+  bublik-ui-e2e
+  ├── runs-page          (chromium)
+  │   └── lists the runs of a day   browser=chromium
+  ├── dashboard          (chromium) …
+  ├── runs-page          (firefox)
+  │   └── lists the runs of a day   browser=firefox
+  ├── dashboard          (firefox) …
+  └── runs-page, dashboard (webkit) …
+  ```
+
+  Spec tags become the
   test's requirements. A test Playwright counts as unexpected is unexpected in
   Bublik, with the first line of each error as a verdict; a flaky test passes
   with the verdict `flaky: passed on retry N`. Siblings are laid end to end in
@@ -518,7 +538,7 @@ bublik-e2e playwright \
   |----------|---------|
   | `PREVIEW_NAME`, `PREVIEW_FQDN` (else `PREVIEW_URL`), `PREVIEW_PAGE_URL` | `CFG` (unless `--cfg`), labels `PREVIEW`, `PREVIEW_URL`, `PREVIEW_PAGE_URL`; tag `preview` |
   | `PREVIEW_DEPLOYMENT`, `PREVIEW_DEPLOYMENT_URL` | labels `DEPLOYMENT`, `DEPLOYMENT_URL` |
-  | `JOB_BROWSER` | label `BROWSER`, tag `browser`, the test parameter |
+  | `JOB_BROWSER` (else `E2E_BROWSERS`), a browser or a comma-separated list | for one browser label `BROWSER` and tag `browser`; for several label `BROWSERS` and tag `browsers` (`chromium,firefox,webkit`, in the order they ran); the test parameter `browser` |
   | `APP` | label `APP`, tag `app` |
   | `TEST_RUN_URL` (a Job's own: `JOB_RUN_URL`), `TEST_REPORT_URL` | label `TEST_RUN_URL`; the report linked from the run's root log |
   | `TEST_STARTED_AT` | the run's start when no test has a result |
@@ -563,10 +583,11 @@ the live protocol does not carry. It takes two pieces in the test Job:
 1. **A Playwright reporter**, shipped with the tool: `playwright-live
    --write-reporter PATH` writes it. It only records, one JSON line per event,
    to the file `BUBLIK_LIVE_EVENTS` names (nothing without it):
-   - `{"type":"begin","time","browser","suites"}` once the run begins: the
-     project named `JOB_BROWSER` (or `BUBLIK_LIVE_BROWSER`), in the json
-     reporter's suite shape (`title`, `file`, `line`, `column`, `specs` with
-     the test `id`, nested `suites`);
+   - `{"type":"begin","time","projects":[{"project","suites"}]}` once the run
+     begins: the browser projects (`BUBLIK_LIVE_BROWSER` or `JOB_BROWSER`,
+     comma-separated, else every project no other one depends on), in the
+     config's order, each in the json reporter's suite shape (`title`,
+     `file`, `line`, `column`, `specs` with the test `id`, nested `suites`);
    - `{"type":"test","id","test"}` for each test's final attempt (one that
      settled it: passed as expected, skipped, interrupted, or out of retries),
      `test` in the json reporter's shape with every attempt;
@@ -583,17 +604,21 @@ the live protocol does not carry. It takes two pieces in the test Job:
    file first, then finishes the run.
 
 `--out` records `{"run", "url", "start_timestamp", "cfg", "plan", "plan_ids",
-"nodes": {key: {"id", "parent", "tin", "plan_id"}}}`, keyed `pkg:<path>` and
-`test:<Playwright test id>`: a source import merges into a live run only when
+"nodes": {key: {"id", "parent", "tin", "plan_id"}}}`, keyed `pkg:<path>` (the
+root), `pkg:<browser>/<path>` and `test:<browser>/<path>@<line>:<column>` (not
+the Playwright test id: the json report keeps only the first project's id of a
+test run in several): a source import merges into a live run only when
 it carries the same key metas and every node the same sequence number, parent
 and tin. Live import never fails the Job: when Bublik cannot start or take the
 run, the streamer says so and writes `{"run": null}`, and the publish side
 imports afresh.
 
 In the test Job (the Playwright image has Python and curl; `uvx` installs the
-tool):
+tool), every browser in one run: bublik-ui's config makes a project of each
+browser `E2E_BROWSERS` names, so no `--project`:
 
 ```bash
+export E2E_BROWSERS=chromium,firefox,webkit
 bublik-e2e playwright-live --write-reporter /work/bublik-live.mjs
 export BUBLIK_LIVE_EVENTS="$JOB_ARTIFACTS/live-events.ndjson"
 bublik-e2e playwright-live --events "$BUBLIK_LIVE_EVENTS" --url "$SWEEP_PUBLISH_FQDN" \

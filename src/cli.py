@@ -672,7 +672,11 @@ def playwright(
     ] = "SWEEP_",
     browser: Annotated[
         Optional[str],
-        typer.Option(help="Playwright project to convert (default: JOB_BROWSER)."),
+        typer.Option(
+            help="Playwright projects to convert, comma-separated, each a browser "
+            "(default: JOB_BROWSER, else E2E_BROWSERS, else every project but the "
+            "setup ones)."
+        ),
     ] = None,
     project: Annotated[
         str, typer.Option(help="Bublik project the run belongs to.")
@@ -829,7 +833,10 @@ def playwright_live(
     ] = "",
     browser: Annotated[
         Optional[str],
-        typer.Option(help="Playwright project streamed (default: JOB_BROWSER)."),
+        typer.Option(
+            help="Playwright projects streamed, comma-separated (default: JOB_BROWSER, "
+            "else E2E_BROWSERS, else every project the reporter reports)."
+        ),
     ] = None,
     project: Annotated[
         str, typer.Option(help="Bublik project the run belongs to.")
