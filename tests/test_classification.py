@@ -316,18 +316,22 @@ _OPTIONS = {
             "test_path": "net/rx_mode",
             "result_ids": [42],
             "parameters": {"mode": "promisc", "env": "lab"},
-            "verdicts": ["Packet lost"],
+            "verdicts": [["Packet lost"]],
         }
     ],
 }
 
 
 def test_matcher_suppresses_every_dimension_for_a_test_only_rule() -> None:
-    """The bulk endpoint takes every dimension; an empty one does not restrict."""
+    """The bulk endpoint takes every dimension; an empty one does not restrict.
+
+    Verdicts are the exception: they are ignored with null, while an empty
+    list is rejected.
+    """
     assert matcher_for([], _OPTIONS) == {
         "test_id": 5,
         "parameters": {},
-        "verdicts": [],
+        "verdicts": None,
         "tags": [],
     }
 
@@ -341,13 +345,13 @@ def test_matcher_fills_the_dimensions_it_keeps_from_the_options() -> None:
     assert matcher_for(["verdicts"], _OPTIONS) == {
         "test_id": 5,
         "parameters": {},
-        "verdicts": ["Packet lost"],
+        "verdicts": [["Packet lost"]],
         "tags": [],
     }
     assert matcher_for(["parameters", "verdicts", "tags"], _OPTIONS) == {
         "test_id": 5,
         "parameters": {"mode": "promisc", "env": "lab"},
-        "verdicts": ["Packet lost"],
+        "verdicts": [["Packet lost"]],
         "tags": ["linux", "x86"],
     }
 
@@ -590,7 +594,7 @@ def test_apply_classification_creates_then_closes(tmp_path: Path) -> None:
     assert body["result_ids"] == [42]
     assert body["categories"] == ["known-issue"]
     assert body["matchers"] == [
-        {"test_id": 5, "parameters": {}, "verdicts": [], "tags": []}
+        {"test_id": 5, "parameters": {}, "verdicts": None, "tags": []}
     ]
     assert (
         "POST",
@@ -601,13 +605,11 @@ def test_apply_classification_creates_then_closes(tmp_path: Path) -> None:
     assert ("POST", "http://host/api/v2/issues/close/", {"ids": [3]}) in calls
 
 
-def test_the_classify_payload_carries_the_results_project(tmp_path: Path) -> None:
-    """The endpoint validates the inline issue before filling its project in.
+def test_a_new_issue_takes_the_results_project(tmp_path: Path) -> None:
+    """The endpoint fills an inline issue's project in from the classified result.
 
-    ``ClassifyRequestSerializer.validate_issue`` runs the whole ``IssueSerializer``
-    over the body, where ``project`` is a required FK, and only then does the view
-    overwrite it with the classified result's own. Sending the result's project is
-    what gets past that, and it can never disagree with what the backend picks.
+    So the payload carries only the plan's own fields, and the manifest records
+    the project from the result row -- which is what the backend picks.
     """
     from core.classify_api import apply_classification
 
@@ -634,13 +636,9 @@ def test_the_classify_payload_carries_the_results_project(tmp_path: Path) -> Non
     manifest, path = _classify_manifest(tmp_path)
     apply_classification(manifest, path, "http://host", Path("jar"), fetch)
 
-    # bug_key is sent even though the plan's issue has no external key: it
-    # shares a unique-together constraint with project, so DRF requires it.
-    assert bodies[0]["issue"] == {
-        "title": "Known",
-        "project": 5,
-        "bug_key": None,
-    }
+    # No bug key without an external reference: it is optional, and unique in
+    # the project only when given.
+    assert bodies[0]["issue"] == {"title": "Known"}
     issue = manifest["classification"]["issues"][0]
     assert (issue["projectId"], issue["projectName"]) == (5, "tsf/project-5")
 

@@ -32,10 +32,11 @@ import urllib.parse
 from core.classification import MATCH_DIMENSIONS
 from core.common import CliError, console, write_json
 
-# An empty matcher dimension means "do not apply this criterion", so a rule keeps
-# exactly the dimensions it names, filled from the classify options, and
-# suppresses the rest.
-EMPTY_BY_DIMENSION: dict[str, Any] = {"parameters": {}, "verdicts": [], "tags": []}
+# What a matcher dimension holds when it does not restrict the rule, so a rule
+# keeps exactly the dimensions it names, filled from the classify options, and
+# suppresses the rest. Verdicts are ignored with ``None``, not ``[]``: an empty
+# list there is no verdict list at all, and the endpoint rejects it.
+EMPTY_BY_DIMENSION: dict[str, Any] = {"parameters": {}, "verdicts": None, "tags": []}
 
 
 def matcher_for(match: list[str], options: dict[str, Any]) -> dict[str, Any]:
@@ -47,23 +48,29 @@ def matcher_for(match: list[str], options: dict[str, Any]) -> dict[str, Any]:
     the tags -- the same values the single-result endpoint used to capture on
     its own.
 
+    The test's verdicts are its results' distinct verdict lists, and a matcher
+    restricting verdicts must give every one of them, getting a rule per list.
+    With one result there is one list (``[]`` if it has no verdicts), so one
+    rule. The lists are passed through untouched: the backend matches verdicts
+    in order, so sorting them would make a rule that matches nothing.
+
     >>> options = {
     ...     "tags": {"default": ["linux"], "allowed": ["linux", "x86"]},
     ...     "tests": [
-    ...         {"test_id": 5, "parameters": {"mode": "promisc"}, "verdicts": ["lost"]}
+    ...         {"test_id": 5, "parameters": {"mode": "promisc"}, "verdicts": [["lost"]]}
     ...     ],
     ... }
     >>> matcher_for([], options)
-    {'test_id': 5, 'parameters': {}, 'verdicts': [], 'tags': []}
+    {'test_id': 5, 'parameters': {}, 'verdicts': None, 'tags': []}
     >>> matcher_for(["verdicts"], options)
-    {'test_id': 5, 'parameters': {}, 'verdicts': ['lost'], 'tags': []}
+    {'test_id': 5, 'parameters': {}, 'verdicts': [['lost']], 'tags': []}
     >>> matcher_for(["parameters", "tags"], options)
-    {'test_id': 5, 'parameters': {'mode': 'promisc'}, 'verdicts': [], 'tags': ['linux']}
+    {'test_id': 5, 'parameters': {'mode': 'promisc'}, 'verdicts': None, 'tags': ['linux']}
     """
     test = options["tests"][0]
     captured: dict[str, Any] = {
         "parameters": dict(test.get("parameters") or {}),
-        "verdicts": sorted(test.get("verdicts") or []),
+        "verdicts": [list(verdicts) for verdicts in test.get("verdicts") or []],
         "tags": sorted((options.get("tags") or {}).get("default") or []),
     }
     matcher: dict[str, Any] = {"test_id": int(test["test_id"])}
@@ -245,6 +252,13 @@ def _project_of(
     return projects[name]
 
 
+def _updated_count(summary: dict[str, Any]) -> int:
+    """How many ids a bulk issue action moved: the API lists them, and once
+    counted them."""
+    updated = summary.get("updated") or 0
+    return len(updated) if isinstance(updated, list) else int(updated)
+
+
 def apply_classification(
     manifest: dict[str, Any],
     manifest_path: Path,
@@ -330,17 +344,11 @@ def apply_classification(
                 )
             issue_payload: Any = issue["issueId"]
         else:
-            # Issue has UniqueConstraints over (project, title) and
-            # (project, bug_key), and DRF makes every field of a unique-together
-            # constraint required -- so both must be present even though the
-            # endpoint overwrites `project` with the classified result's own and
-            # an issue without an external reference has no bug key at all.
-            # `null` is what "unlinked" looks like there; omitting it is a 400.
-            issue_payload = {
-                "title": issue["title"],
-                "project": project_id,
-                "bug_key": issue.get("key") or None,
-            }
+            # A new issue takes the classified result's project, so the payload
+            # carries only what the plan says about the issue itself.
+            issue_payload = {"title": issue["title"]}
+            if issue.get("key"):
+                issue_payload["bug_key"] = issue["key"]
             if issue.get("description"):
                 issue_payload["description"] = issue["description"]
 
@@ -402,7 +410,7 @@ def apply_classification(
             payload={"ids": to_deactivate},
             cookie_jar=cookie_jar,
         )
-        deactivated = int(summary.get("updated") or 0)
+        deactivated = _updated_count(summary)
 
     # Closing happens last: it deactivates the issue's rules, so a rule created
     # after the close would be silently inert.
@@ -424,7 +432,7 @@ def apply_classification(
             payload={"ids": to_close},
             cookie_jar=cookie_jar,
         )
-        closed = int(summary.get("updated") or 0)
+        closed = _updated_count(summary)
 
     write_json(manifest_path, manifest, True)
 
