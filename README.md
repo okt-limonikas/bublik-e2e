@@ -528,11 +528,14 @@ bublik-e2e playwright \
   Bublik, with the first line of each error as a verdict; a flaky test passes
   with the verdict `flaky: passed on retry N`. Siblings are laid end to end in
   the order they ran (a test's runs where the first of them ran), since
-  Bublik's timestamp repair shifts overlapping ones by a day. Playwright runs
-  the browsers one after the other, so with several the run's timestamps keep
-  each result's duration and order, not the wall clock; and the live import
-  (below), which follows the plan in order, moves as the last browser goes
-  through the suite, showing what the earlier ones did then.
+  Bublik's timestamp repair shifts overlapping ones by a day. With several
+  browsers the run's timestamps keep each result's duration and order, not
+  the wall clock. The live import (below) follows the plan in order, so it
+  moves as the slowest browser goes through the suite: Playwright runs the
+  browsers one after the other unless the suite shares its workers out among
+  the browser projects (bublik-ui's `E2E_WORKERS`), and run one after the
+  other, the stream moves only as the last browser goes, showing what the
+  earlier ones did then.
 - **What was tested.** Read from environment variables under the `--facts-env`
   prefix (default `SWEEP_`, as a bublik-preview Sweep hands them to its publish
   Job; `--facts-env ""` reads a Job's own):

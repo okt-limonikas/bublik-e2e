@@ -13,10 +13,12 @@ must come in plan order (it may skip ahead over what never ran), inside its
 parent, and every node gets the next sequence number. Playwright settles a test
 that fails only after its retries, which run once the rest of its file did, so
 a result that comes early waits for the ones before it. Nothing is streamed
-until it is final, so what Bublik shows never has to change. Playwright runs
-the browsers one after the other, so with several a test's run in the first
-browser waits for its runs in the others: the stream moves as the last
-browser goes through the suite, and shows what the earlier ones did then.
+until it is final, so what Bublik shows never has to change. A test's run in
+the first browser waits for its runs in the others, so the stream moves as
+the slowest browser goes through the suite: side by side when the suite
+shares its workers out among the browser projects (bublik-ui's E2E_WORKERS),
+else, Playwright running the browsers one after the other, only as the last
+browser goes, showing what the earlier ones did then.
 
 When the suite ends, the Sweep's publish Job imports the whole bundle, which
 merges into the live run only if it carries the same START_TIMESTAMP and CFG,
