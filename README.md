@@ -536,9 +536,8 @@ bublik-e2e playwright \
   the browser projects (bublik-ui's `E2E_WORKERS`), and run one after the
   other, the stream moves only as the last browser goes, showing what the
   earlier ones did then.
-- **What was tested.** Read from environment variables under the `--facts-env`
-  prefix (default `SWEEP_`, as a bublik-preview Sweep hands them to its publish
-  Job; `--facts-env ""` reads a Job's own):
+- **What was tested.** Read from the environment variables bublik-preview
+  gives a Job, under the `--facts-env` prefix (the Job's own by default):
 
   | Variable | Becomes |
   |----------|---------|
@@ -546,7 +545,7 @@ bublik-e2e playwright \
   | `PREVIEW_DEPLOYMENT`, `PREVIEW_DEPLOYMENT_URL` | labels `DEPLOYMENT`, `DEPLOYMENT_URL` |
   | `JOB_BROWSER` (else `E2E_BROWSERS`), a browser or a comma-separated list | for one browser label `BROWSER` and tag `browser`; for several label `BROWSERS` and tag `browsers` (`chromium,firefox,webkit`, in the order they ran); the test parameter `browser` |
   | `APP` | label `APP`, tag `app` |
-  | `TEST_RUN_URL` (a Job's own: `JOB_RUN_URL`), `TEST_REPORT_URL` | label `TEST_RUN_URL`; the report linked from the run's root log |
+  | `TEST_RUN_URL` (a Job's own: `JOB_RUN_URL`), `TEST_REPORT_URL` (a Job's own: `playwright-report/index.html` under `JOB_ARTIFACTS_URL`) | label `TEST_RUN_URL`; the report linked from the run's root log |
   | `TEST_STARTED_AT` | the run's start when no test has a result |
   | `PREVIEW_SOURCE_<SLOT>_SHA` | `<SLOT>_REV` (revision), one per slot |
   | `…_BRANCH` (else a `REF` that is a branch) | `<SLOT>_BRANCH` (branch) |
@@ -566,11 +565,17 @@ bublik-e2e playwright \
   Bublik's schemas shipped with the tool (`--schemas DIR` to use others).
 - **The import.** The bundle is imported from
   `{url}/logs/<publish-dir name>/<bundle-id>/`, so the publish dir must be one
-  the instance's log server serves there. A bundle already imported from that
-  URL is not imported again. `--setup-project` creates the project if it is
-  missing, adds the logs base and each repository's `REVISIONS` link to its
-  `references` without dropping what is there (issue trackers, other bases and
-  links), and writes `per_conf` and `meta` only if the project has none.
+  the instance's log server serves there, or from `<bundle-url>/<bundle-id>/`
+  when `--bundle-url` names where the bundle is served: a bublik-preview check
+  Job writes it into the tested preview's own log folder
+  (`$PREVIEW_DIR/data/logs/logs/e2e-results`, served at
+  `$PREVIEW_FQDN/logs/e2e-results/`) and imports it into another Bublik, which
+  fetches it from the preview. A bundle already imported from that URL is not
+  imported again. `--setup-project` creates the project if it is missing, adds
+  the logs base (and the `--bundle-url` base) and each repository's
+  `REVISIONS` link to its `references` without dropping what is there (issue
+  trackers, other bases and links), and writes `per_conf` and `meta` only if
+  the project has none.
   Without it the project must exist. The run's URL is printed, and
   `--summary` writes `{"links": [{"title", "url"}]}` with it (the bundle's URL
   without `--import`), which bublik-preview shows on the run's page.

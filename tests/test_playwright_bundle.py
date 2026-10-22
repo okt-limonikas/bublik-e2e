@@ -28,27 +28,28 @@ FIXTURE = Path(__file__).parent / "fixtures" / "playwright"
 REPORT = json.loads((FIXTURE / "results.json").read_text())
 UI_SHA = "879fe337c333bd4c2c2794d8e59000e483eb499e"
 ENV = {
-    "SWEEP_PREVIEW_NAME": "chat",
-    "SWEEP_PREVIEW_FQDN": "https://chat.bublik.example",
-    "SWEEP_PREVIEW_DEPLOYMENT": "42",
-    "SWEEP_PREVIEW_DEPLOYMENT_URL": "http://preview.local/deployments/42",
-    "SWEEP_JOB_BROWSER": "chromium",
-    "SWEEP_APP": "bublik",
-    "SWEEP_TEST_RUN_URL": "http://preview.local/check-runs/7",
-    "SWEEP_TEST_REPORT_URL": "http://preview.local/check-runs/7/artifacts/report/index.html",
-    "SWEEP_PREVIEW_SOURCE_UI_SHA": UI_SHA,
-    "SWEEP_PREVIEW_SOURCE_UI_REF": "refs/pull/648/head",
-    "SWEEP_PREVIEW_SOURCE_UI_REPOSITORY": "https://github.com/ts-factory/bublik-ui.git",
-    "SWEEP_PREVIEW_SOURCE_UI_BRANCH": "feat/chat",
-    "SWEEP_PREVIEW_SOURCE_BACKEND_SHA": "4c798881496ee952b12c7cdb0d89f13744f9ea90",
-    "SWEEP_PREVIEW_SOURCE_BACKEND_REF": "main",
-    "SWEEP_PREVIEW_SOURCE_BACKEND_REPOSITORY": "git@github.com:ts-factory/bublik.git",
+    "PREVIEW_NAME": "chat",
+    "PREVIEW_FQDN": "https://chat.bublik.example",
+    "PREVIEW_DEPLOYMENT": "42",
+    "PREVIEW_DEPLOYMENT_URL": "http://preview.local/deployments/42",
+    "JOB_BROWSER": "chromium",
+    "APP": "bublik",
+    "JOB_RUN_URL": "http://preview.local/check-runs/7",
+    "JOB_ARTIFACTS_URL": "http://preview.local/check-runs/7/artifacts",
+    "PREVIEW_SOURCE_UI_SHA": UI_SHA,
+    "PREVIEW_SOURCE_UI_REF": "refs/pull/648/head",
+    "PREVIEW_SOURCE_UI_REPOSITORY": "https://github.com/ts-factory/bublik-ui.git",
+    "PREVIEW_SOURCE_UI_BRANCH": "feat/chat",
+    "PREVIEW_SOURCE_BACKEND_SHA": "4c798881496ee952b12c7cdb0d89f13744f9ea90",
+    "PREVIEW_SOURCE_BACKEND_REF": "main",
+    "PREVIEW_SOURCE_BACKEND_REPOSITORY": "git@github.com:ts-factory/bublik.git",
     "UNRELATED": "x",
 }
+REPORT_URL = "http://preview.local/check-runs/7/artifacts/playwright-report/index.html"
 
 
 def facts(browser: str = "chromium") -> Facts:
-    out = facts_from_env(ENV, "SWEEP_")
+    out = facts_from_env(ENV, "")
     out.browser = browser
     return out
 
@@ -219,8 +220,8 @@ def test_siblings_never_overlap_and_parents_span_their_children() -> None:
     assert root["start_ts"] == "2026.10.20 10:00:00.000"
 
 
-def test_facts_come_from_the_prefixed_environment() -> None:
-    read = facts_from_env(ENV, "SWEEP_")
+def test_facts_come_from_the_jobs_environment() -> None:
+    read = facts_from_env(ENV, "")
     assert (read.preview, read.deployment, read.browser, read.app) == (
         "chat",
         "42",
@@ -236,8 +237,21 @@ def test_facts_come_from_the_prefixed_environment() -> None:
     (backend,) = [repo.resolved() for repo in read.repos if repo.slot == "backend"]
     assert backend.branch == "main"
     assert backend.repository_url == "https://github.com/ts-factory/bublik"
-    unprefixed = facts_from_env({"PREVIEW_NAME": "own", "JOB_BROWSER": "webkit"}, "")
-    assert (unprefixed.preview, unprefixed.browser) == ("own", "webkit")
+    assert read.test_run_url == ENV["JOB_RUN_URL"]
+    assert read.report_url == REPORT_URL
+
+
+def test_another_runs_facts_come_under_their_prefix() -> None:
+    handed = {f"X_{k}": v for k, v in ENV.items() if k.startswith("PREVIEW")}
+    handed["X_TEST_RUN_URL"] = "http://preview.local/check-runs/5"
+    handed["X_TEST_REPORT_URL"] = (
+        "http://preview.local/check-runs/5/artifacts/report/index.html"
+    )
+    read = facts_from_env({**handed, **ENV}, "X_")
+    assert (read.preview, read.deployment, read.browser) == ("chat", "42", "")
+    assert [repo.slot for repo in read.repos] == ["backend", "ui"]
+    assert read.test_run_url == handed["X_TEST_RUN_URL"]
+    assert read.report_url == handed["X_TEST_REPORT_URL"]
 
 
 def test_a_sha_ref_is_no_branch_and_explicit_facts_win() -> None:
@@ -256,7 +270,6 @@ def test_a_sha_ref_is_no_branch_and_explicit_facts_win() -> None:
 @pytest.fixture
 def bundle(tmp_path: Path) -> Path:
     the_facts = facts()
-    the_facts.report_url = ENV["SWEEP_TEST_REPORT_URL"]
     write_bundle(
         REPORT,
         the_facts,
@@ -333,7 +346,7 @@ def test_attachments_of_the_last_attempt_keep_their_names(bundle: Path) -> None:
     run_level = json.loads(
         (bundle / "attachments" / "node_1_0" / "attachments.json").read_text()
     )
-    assert run_level["attachments"][0]["uri"] == ENV["SWEEP_TEST_REPORT_URL"]
+    assert run_level["attachments"][0]["uri"] == REPORT_URL
     assert sorted(p.name for p in (bundle / "attachments").iterdir()) == [
         "node_1_0",
         "node_id5",
@@ -409,6 +422,39 @@ def test_cli_writes_the_bundle_and_a_summary(tmp_path: Path) -> None:
     assert json.loads(summary.read_text()) == {
         "links": [
             {"title": "Bundle", "url": "https://staging.example/logs/e2e-results/one/"}
+        ]
+    }
+
+
+def test_cli_bundle_url_says_where_the_bundle_is_served(tmp_path: Path) -> None:
+    summary = tmp_path / "summary.json"
+    outcome = runner.invoke(
+        app,
+        [
+            "playwright",
+            "--results",
+            str(FIXTURE / "results.json"),
+            "--publish-dir",
+            str(tmp_path / "e2e-results"),
+            "--bundle-id",
+            "one",
+            "--bundle-url",
+            "https://chat.bublik.example/logs/e2e-results/",
+            "--url",
+            "https://staging.example",
+            "--summary",
+            str(summary),
+        ],
+        env=cli_env(),
+    )
+    assert outcome.exit_code == 0, outcome.output
+    assert (tmp_path / "e2e-results" / "one" / ".done").exists()
+    assert json.loads(summary.read_text()) == {
+        "links": [
+            {
+                "title": "Bundle",
+                "url": "https://chat.bublik.example/logs/e2e-results/one/",
+            }
         ]
     }
 
@@ -601,6 +647,42 @@ def test_import_sets_the_project_up_and_waits_for_the_run(
     assert len(fake.imports) == 1
     assert [p["name"] for p in fake.projects] == ["other", "bublik-preview"]
     assert len(fake.configs) == 3
+
+
+def test_import_from_a_bundle_url_adds_its_base_to_the_project(
+    tmp_path: Path, bublik: tuple[FakeBublik, str]
+) -> None:
+    fake, url = bublik
+    fake.projects.append({"id": 2, "name": "bublik-preview"})
+    fake.add_config(
+        "references",
+        2,
+        {"LOGS_BASES": [{"name": "Published runs", "uri": [f"{url}/logs/"]}]},
+    )
+    served = "https://chat.bublik.example/logs/e2e-results"
+    outcome = runner.invoke(
+        app,
+        import_args(tmp_path, url, "--setup-project", "--bundle-url", served),
+        env=cli_env(),
+    )
+    assert outcome.exit_code == 0, outcome.output
+    assert fake.imports == [{"url": f"{served}/chat-42-chromium/", "project": "2"}]
+    references = fake.configs[0]["content"]
+    assert references["LOGS_BASES"] == [
+        {"name": "Published runs", "uri": [f"{url}/logs/", f"{served}/"]}
+    ]
+
+    again = runner.invoke(
+        app,
+        import_args(tmp_path, url, "--setup-project", "--bundle-url", served),
+        env=cli_env(),
+    )
+    assert again.exit_code == 0, again.output
+    assert len(fake.imports) == 1
+    assert fake.configs[0]["content"]["LOGS_BASES"][0]["uri"] == [
+        f"{url}/logs/",
+        f"{served}/",
+    ]
 
 
 def test_import_merges_into_what_the_project_has(

@@ -5,6 +5,7 @@ from __future__ import annotations
 import shutil
 import tempfile
 import time as time_module
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -43,13 +44,25 @@ def ensure_project(base_url: str, cookie_jar: Path, name: str, create: bool) -> 
 
 
 def merged_references(
-    current: dict[str, Any], logs_base: str, revisions: dict[str, dict[str, str]]
+    current: dict[str, Any],
+    logs_bases: Iterable[str],
+    revisions: dict[str, dict[str, str]],
 ) -> dict[str, Any]:
-    """``current`` with the logs base and revision links added; nothing removed."""
+    """``current`` with the logs bases and revision links added; nothing removed.
+
+    A base no entry has yet goes under ``LOGS_BASE_NAME``, beside the ones
+    there: a preview's log folder for each preview that published a bundle.
+    """
     merged = dict(current)
     bases = [dict(base) for base in merged.get("LOGS_BASES") or []]
-    if not any(logs_base in (base.get("uri") or []) for base in bases):
-        bases.append({"name": LOGS_BASE_NAME, "uri": [logs_base]})
+    for logs_base in logs_bases:
+        if any(logs_base in (base.get("uri") or []) for base in bases):
+            continue
+        ours = next((base for base in bases if base.get("name") == LOGS_BASE_NAME), None)
+        if ours is None:
+            bases.append({"name": LOGS_BASE_NAME, "uri": [logs_base]})
+        else:
+            ours["uri"] = [*(ours.get("uri") or []), logs_base]
     merged["LOGS_BASES"] = bases
     if revisions:
         merged["REVISIONS"] = {**(merged.get("REVISIONS") or {}), **revisions}
@@ -61,12 +74,15 @@ def ensure_project_configs(
     cookie_jar: Path,
     project_id: int,
     revisions: dict[str, dict[str, str]],
+    logs_bases: Sequence[str] = (),
 ) -> None:
     """Give the project what an import into it needs, keeping what it has.
 
     ``references`` is merged (its issue trackers, other logs bases and revision
     links stay); ``per_conf`` and ``meta`` are written only when the project has
-    none, since someone may have tuned them by hand.
+    none, since someone may have tuned them by hand. ``logs_bases`` are added to
+    the logs bases beside the instance's own ``/logs/``: where bundles served
+    elsewhere are fetched from.
     """
     configs = curl_json(f"{base_url}/api/v2/config/", cookie_jar=cookie_jar) or []
 
@@ -82,7 +98,7 @@ def ensure_project_configs(
             None,
         )
 
-    logs_base = f"{base_url}/logs/"
+    bases = [f"{base_url}/logs/", *logs_bases]
     existing = find("references")
     current: dict[str, Any] = {}
     if existing is not None:
@@ -90,7 +106,7 @@ def ensure_project_configs(
             f"{base_url}/api/v2/config/{existing['id']}/", cookie_jar=cookie_jar
         )
         current = (detail or {}).get("content") or {}
-    merged = merged_references(current, logs_base, revisions)
+    merged = merged_references(current, bases, revisions)
     if existing is None or merged != current:
         upsert_config(
             base_url,
@@ -188,10 +204,12 @@ def import_bundle(
     setup_project: bool,
     revisions: dict[str, dict[str, str]],
     timeout: int,
+    logs_bases: Sequence[str] = (),
 ) -> int:
     """Import the bundle at ``import_url`` and return its run id.
 
-    A bundle already imported from that URL is not imported again.
+    A bundle already imported from that URL is not imported again. With
+    ``setup_project``, ``logs_bases`` join the project's logs bases.
     """
     base_url = settings.base_url
     cookie_dir = Path(tempfile.mkdtemp(prefix="bublik-e2e-bundle-"))
@@ -200,7 +218,9 @@ def import_bundle(
         login(base_url, settings, cookie_jar)
         project_id = ensure_project(base_url, cookie_jar, project, setup_project)
         if setup_project:
-            ensure_project_configs(base_url, cookie_jar, project_id, revisions)
+            ensure_project_configs(
+                base_url, cookie_jar, project_id, revisions, logs_bases
+            )
         existing = find_existing_run_id(base_url, import_url, cookie_jar)
         if existing is not None:
             return existing

@@ -140,8 +140,9 @@ _REPO_FIELDS = {
 def facts_from_env(env: Mapping[str, str], prefix: str) -> Facts:
     """Read the facts bublik-preview gives a Job, under ``prefix``.
 
-    A sweep's publish Job gets the test run's variables as ``SWEEP_<NAME>``; the
-    test Job itself reads its own with an empty prefix.
+    The test Job itself reads its own with an empty prefix; a Job handed another
+    run's variables under a prefix (``TEST_RUN_URL``, ``TEST_REPORT_URL`` among
+    them) names it.
     """
 
     def get(name: str) -> str:
@@ -167,9 +168,16 @@ def facts_from_env(env: Mapping[str, str], prefix: str) -> Facts:
         preview_page_url=get("PREVIEW_PAGE_URL"),
         deployment=get("PREVIEW_DEPLOYMENT"),
         deployment_url=get("PREVIEW_DEPLOYMENT_URL"),
-        # The test Job itself (no prefix) is the test run: its own page.
+        # The test Job itself (no prefix) is the test run: its own page, and
+        # Playwright's HTML report among its artifacts, where bublik-ui's e2e
+        # script copies it.
         test_run_url=get("TEST_RUN_URL") or (get("JOB_RUN_URL") if not prefix else ""),
-        report_url=get("TEST_REPORT_URL"),
+        report_url=get("TEST_REPORT_URL")
+        or (
+            f"{get('JOB_ARTIFACTS_URL').rstrip('/')}/playwright-report/index.html"
+            if not prefix and get("JOB_ARTIFACTS_URL")
+            else ""
+        ),
         started_at=get("TEST_STARTED_AT"),
         finished_at=get("TEST_FINISHED_AT"),
         repos=repos,

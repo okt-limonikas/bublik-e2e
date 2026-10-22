@@ -633,13 +633,17 @@ def plan(
 
 PLAYWRIGHT_EPILOG = """[bold]Examples[/]
 
-[dim]Inside a bublik-preview publish Job (the test run's facts are SWEEP_*):[/]
+[dim]At the end of a bublik-preview check Job: the bundle in the tested preview's own log folder,
+imported into the Bublik E2E_LIVE_URL names, merged into the run playwright-live streamed:[/]
 
-[cyan]bublik-e2e playwright --results "$SWEEP_ARTIFACTS/results.json" --attachments-dir "$SWEEP_ARTIFACTS/test-output" --publish-dir "$PREVIEW_DIR/data/logs/logs/e2e-results" --bundle-id "$SWEEP_PREVIEW_NAME-$SWEEP_PREVIEW_DEPLOYMENT-$SWEEP_JOB_BROWSER" --import --url "$PREVIEW_FQDN" --setup-project[/]
+[cyan]bublik-e2e playwright --results "$out/results.json" --attachments-dir "$out/test-output" \\
+  --publish-dir "$PREVIEW_DIR/data/logs/logs/e2e-results" --bundle-url "$PREVIEW_FQDN/logs/e2e-results" \\
+  --bundle-id "$PREVIEW_NAME-$PREVIEW_DEPLOYMENT-$CHECK_RUN" --live "$JOB_ARTIFACTS/live.json" \\
+  --import --url "$E2E_LIVE_URL" --email "$E2E_LIVE_EMAIL" --password "$E2E_LIVE_PASSWORD" --setup-project[/]
 
-[dim]From the test Job itself, reading its own variables:[/]
+[dim]Into the instance whose log folder the bundle is written to:[/]
 
-[cyan]bublik-e2e playwright --facts-env "" --results results.json --publish-dir /srv/logs/e2e-results --bundle-id run-1[/]
+[cyan]bublik-e2e playwright --results results.json --publish-dir /srv/logs/e2e-results --bundle-id run-1 --import --url http://localhost[/]
 """
 
 
@@ -651,11 +655,20 @@ def playwright(
     publish_dir: Annotated[
         Path,
         typer.Option(
-            help="Directory the instance serves at {url}/logs/<name>/; the bundle "
-            "is written to <publish-dir>/<bundle-id>/."
+            help="Where the bundle is written: <publish-dir>/<bundle-id>/. Without "
+            "--bundle-url, the directory the instance serves at {url}/logs/<name>/."
         ),
     ],
     bundle_id: Annotated[str, typer.Option(help="The bundle's directory name.")],
+    bundle_url: Annotated[
+        Optional[str],
+        typer.Option(
+            help="Where the instance fetches the bundle from: <bundle-url>/<bundle-id>/ "
+            "(default: {url}/logs/<publish-dir name>). A preview's own log folder, "
+            "say, when the bundle lies there and the instance is another. With "
+            "--setup-project it joins the project's logs bases."
+        ),
+    ] = None,
     attachments_dir: Annotated[
         Optional[Path],
         typer.Option(
@@ -667,9 +680,10 @@ def playwright(
         str,
         typer.Option(
             help="Prefix of the environment variables the facts are read from "
-            "(PREVIEW_NAME, PREVIEW_SOURCE_<SLOT>_SHA, JOB_BROWSER, ...)."
+            "(PREVIEW_NAME, PREVIEW_SOURCE_<SLOT>_SHA, JOB_BROWSER, ...); the "
+            "Job's own by default."
         ),
-    ] = "SWEEP_",
+    ] = "",
     browser: Annotated[
         Optional[str],
         typer.Option(
@@ -764,16 +778,22 @@ def playwright(
         settings = Settings.from_args(
             argparse.Namespace(url=url, email=email, password=password)
         )
-        bundle_url = f"{settings.logs_base_url}/{publish_dir.name}/{bundle_id}/"
-        link = {"title": "Bundle", "url": bundle_url}
+        base = (
+            bundle_url.rstrip("/")
+            if bundle_url
+            else f"{settings.logs_base_url}/{publish_dir.name}"
+        )
+        import_url = f"{base}/{bundle_id}/"
+        link = {"title": "Bundle", "url": import_url}
         if do_import:
             run_id = import_bundle(
                 settings,
-                bundle_url,
+                import_url,
                 project,
                 setup_project=setup_project,
                 revisions=revisions(facts),
                 timeout=timeout,
+                logs_bases=[base + "/"] if bundle_url else [],
             )
             run_url = f"{settings.ui_base_url}/runs/{run_id}"
             link = {"title": "Bublik run", "url": run_url}
@@ -793,7 +813,7 @@ with the reporter, then stop the stream (it reads what is left first):
 
 [cyan]bublik-e2e playwright-live --write-reporter /work/bublik-live.mjs[/]
 [cyan]BUBLIK_LIVE_EVENTS=$JOB_ARTIFACTS/live-events.ndjson; export BUBLIK_LIVE_EVENTS[/]
-[cyan]bublik-e2e playwright-live --events "$BUBLIK_LIVE_EVENTS" --url "$SWEEP_PUBLISH_FQDN" \\
+[cyan]bublik-e2e playwright-live --events "$BUBLIK_LIVE_EVENTS" --url "$E2E_LIVE_URL" \\
   --out "$JOB_ARTIFACTS/live.json" & live=$![/]
 [cyan]pnpm exec playwright test --reporter=list,html,json,/work/bublik-live.mjs ...[/]
 [cyan]kill -TERM $live; wait $live[/]
