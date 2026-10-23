@@ -631,6 +631,10 @@ and tin. Live import never fails the Job: when Bublik cannot start or take the
 run, the streamer says so and writes `{"run": null}`, and the publish side
 imports afresh.
 
+`--summary FILE` writes `{"links": [{"title": "Bublik run", "url": …}]}` as
+soon as Bublik started the run: a bublik-preview Job's `summary.json`, so the
+check run links to the live run while it runs.
+
 In the test Job (the Playwright image has Python and curl; `uvx` installs the
 tool), every browser in one run: bublik-ui's config makes a project of each
 browser `E2E_BROWSERS` names, so no `--project`:
@@ -640,7 +644,8 @@ export E2E_BROWSERS=chromium,firefox,webkit
 bublik-e2e playwright-live --write-reporter /work/bublik-live.mjs
 export BUBLIK_LIVE_EVENTS="$JOB_ARTIFACTS/live-events.ndjson"
 bublik-e2e playwright-live --events "$BUBLIK_LIVE_EVENTS" --url "$SWEEP_PUBLISH_FQDN" \
-  --project bublik-preview --ts-name bublik-ui-e2e --out "$JOB_ARTIFACTS/live.json" &
+  --project bublik-preview --ts-name bublik-ui-e2e --out "$JOB_ARTIFACTS/live.json" \
+  --summary "$JOB_ARTIFACTS/summary.json" &
 live=$!
 PLAYWRIGHT_JSON_OUTPUT_FILE=dist/.playwright/apps/bublik/results.json \
 PLAYWRIGHT_HTML_OUTPUT_DIR=dist/.playwright/apps/bublik/playwright-report \

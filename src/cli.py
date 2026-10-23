@@ -823,7 +823,7 @@ with the reporter, then stop the stream (it reads what is left first):
 [cyan]bublik-e2e playwright-live --write-reporter /work/bublik-live.mjs[/]
 [cyan]BUBLIK_LIVE_EVENTS=$JOB_ARTIFACTS/live-events.ndjson; export BUBLIK_LIVE_EVENTS[/]
 [cyan]bublik-e2e playwright-live --events "$BUBLIK_LIVE_EVENTS" --url "$E2E_LIVE_URL" \\
-  --out "$JOB_ARTIFACTS/live.json" & live=$![/]
+  --out "$JOB_ARTIFACTS/live.json" --summary "$JOB_ARTIFACTS/summary.json" & live=$![/]
 [cyan]pnpm exec playwright test --reporter=list,html,json,/work/bublik-live.mjs ...[/]
 [cyan]kill -TERM $live; wait $live[/]
 """
@@ -888,6 +888,13 @@ def playwright_live(
         float,
         typer.Option(help="Give up after this many seconds without an event; 0 never."),
     ] = 0.0,
+    summary: Annotated[
+        Optional[Path],
+        typer.Option(
+            help="Write the live run's link here as a summary.json as soon as "
+            "Bublik started it, so the Job links to it while it runs."
+        ),
+    ] = None,
 ) -> None:
     """Stream a running Playwright suite into Bublik as a live run.
 
@@ -909,8 +916,21 @@ def playwright_live(
         facts.browser = browser
     if app_name:
         facts.app = app_name
+
+    def link_run(run: int) -> None:
+        if summary is None:
+            return
+        link = {"title": "Bublik run", "url": f"{url.rstrip('/')}/v2/runs/{run}"}
+        summary.parent.mkdir(parents=True, exist_ok=True)
+        summary.write_text(json.dumps({"links": [link]}) + "\n", encoding="utf-8")
+
     stream = LiveStream(
-        url, facts, browser=facts.browser, interval=interval, flush_every=flush_every
+        url,
+        facts,
+        browser=facts.browser,
+        interval=interval,
+        flush_every=flush_every,
+        on_run=link_run,
     )
     try:
         record = run_live(events, out, stream, idle_timeout=idle_timeout)

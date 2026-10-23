@@ -250,6 +250,7 @@ class LiveStream:
         post: Post = post_live,
         clock: Callable[[], float] = time_module.monotonic,
         warn: Callable[[str], None] | None = None,
+        on_run: Callable[[int], None] | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.facts = facts
@@ -265,6 +266,8 @@ class LiveStream:
         self.warn = warn or (
             lambda message: console.print(f"[yellow]warning:[/] {message}")
         )
+        # on_run hears the run's id as soon as Bublik started it.
+        self.on_run = on_run
 
         self.run: int | None = None
         self.broken = False
@@ -350,6 +353,11 @@ class LiveStream:
             self.broken = True
             return
         self.run = run
+        if self.on_run is not None:
+            try:
+                self.on_run(run)
+            except OSError as exc:
+                self.warn(f"could not say where the live run is: {exc}")
         self._start(self.root, begun)
 
     # --- the stream ---------------------------------------------------------

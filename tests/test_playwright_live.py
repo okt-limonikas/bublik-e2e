@@ -543,6 +543,52 @@ def test_several_browsers_stream_as_one_run_and_the_bundle_merges_into_it(
     write_bundle(report, multi_facts(), tmp_path / "bundle", live=info)
 
 
+def test_the_run_is_heard_of_as_soon_as_bublik_started_it(
+    live: tuple[FakeLive, str],
+) -> None:
+    _, url = live
+    heard: list[int] = []
+    live_stream = LiveStream(url, facts(), flush_every=0, on_run=heard.append)
+
+    live_stream.handle(EVENTS[0])
+
+    assert heard == [77]
+
+
+def test_the_live_run_is_linked_from_a_summary(
+    tmp_path: Path, live: tuple[FakeLive, str]
+) -> None:
+    _, url = live
+    events = tmp_path / "events.ndjson"
+    events.write_text("".join(json.dumps(e) + "\n" for e in EVENTS))
+    summary = tmp_path / "artifacts" / "summary.json"
+
+    outcome = runner.invoke(
+        app,
+        [
+            "playwright-live",
+            "--events",
+            str(events),
+            "--url",
+            url,
+            "--out",
+            str(tmp_path / "live.json"),
+            "--summary",
+            str(summary),
+            "--ts-name",
+            "bublik-ui-e2e",
+            "--idle-timeout",
+            "5",
+        ],
+        env=ENV,
+    )
+
+    assert outcome.exit_code == 0, outcome.output
+    assert json.loads(summary.read_text()) == {
+        "links": [{"title": "Bublik run", "url": f"{url}/v2/runs/77"}]
+    }
+
+
 def test_the_reporter_is_written_where_asked(tmp_path: Path) -> None:
     target = tmp_path / "work" / "bublik-live.mjs"
 
