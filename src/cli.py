@@ -741,6 +741,14 @@ def playwright(
             "A missing file, or one with no live run, imports afresh."
         ),
     ] = None,
+    interrupted: Annotated[
+        bool,
+        typer.Option(
+            "--interrupted",
+            help="The suite was stopped before its end (a cancelled Job): the run "
+            "ends INTERRUPTED, not DONE or ERROR.",
+        ),
+    ] = False,
 ) -> None:
     """Turn a Playwright JSON report into a Bublik run bundle, and import it."""
     try:
@@ -769,6 +777,7 @@ def playwright(
             attachments_dir=attachments_dir,
             schemas=None if no_validate else (schemas or SCHEMA_DIR),
             live=live_info,
+            interrupted=interrupted,
         )
         console.print(
             f"[green]✓[/] bundle {written.path}: {written.tests} tests, "

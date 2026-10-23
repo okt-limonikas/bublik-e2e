@@ -850,7 +850,9 @@ def run_cfg(facts: Facts, browser: str) -> str:
     return facts.cfg or facts.preview or browser
 
 
-def metas(conversion: Conversion, facts: Facts) -> list[dict[str, str]]:
+def metas(
+    conversion: Conversion, facts: Facts, interrupted: bool = False
+) -> list[dict[str, str]]:
     root = conversion.root
     live = conversion.live
     start = bublik_timestamp(datetime.fromtimestamp(root["start_ts_utc"], timezone.utc))
@@ -863,8 +865,9 @@ def metas(conversion: Conversion, facts: Facts) -> list[dict[str, str]]:
         finish=bublik_timestamp(finish),
         # Bublik concludes run-error from RUN_STATUS ERROR whatever the share
         # of failures: its NOK borders round it to whole percents, so one
-        # failure in a few hundred tests would pass for none.
-        status="ERROR" if root["err"] else "DONE",
+        # failure in a few hundred tests would pass for none. Merged into a
+        # live run, this status replaces the one its finish set.
+        status="INTERRUPTED" if interrupted else "ERROR" if root["err"] else "DONE",
     )
 
 
@@ -1045,8 +1048,10 @@ def write_bundle(
     attachments_dir: Path | None = None,
     schemas: Path | None = SCHEMA_DIR,
     live: LiveInfo | None = None,
+    interrupted: bool = False,
 ) -> Written:
-    """Write the bundle into ``bundle_dir`` (replacing it), validated, ``.done`` last."""
+    """Write the bundle into ``bundle_dir`` (replacing it), validated, ``.done`` last;
+    ``interrupted``: the suite was stopped before its end."""
     conversion = convert(report, facts, live)
     if bundle_dir.exists():
         shutil.rmtree(bundle_dir)
@@ -1061,7 +1066,8 @@ def write_bundle(
     _strip_private(conversion.root)
     root = conversion.root
     _write(
-        bundle_dir / "meta_data.json", {"version": 1, "metas": metas(conversion, facts)}
+        bundle_dir / "meta_data.json",
+        {"version": 1, "metas": metas(conversion, facts, interrupted)},
     )
     _write(
         bundle_dir / "bublik.json",

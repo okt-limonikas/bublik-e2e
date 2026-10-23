@@ -279,6 +279,15 @@ def bundle(tmp_path: Path) -> Path:
     return tmp_path / "e2e-results" / "chat-42-chromium"
 
 
+def test_a_stopped_suite_is_an_interrupted_run(tmp_path: Path) -> None:
+    # Its import merges into the live run, whose finish said INTERRUPTED:
+    # the bundle must not say ERROR or DONE over it.
+    write_bundle(REPORT, facts(), tmp_path / "b", interrupted=True)
+    metas = json.loads((tmp_path / "b" / "meta_data.json").read_text())["metas"]
+    by = {meta["name"]: meta["value"] for meta in metas}
+    assert by["RUN_STATUS"] == "INTERRUPTED"
+
+
 def test_bundle_has_its_files_and_done_last(bundle: Path) -> None:
     assert (bundle / ".done").read_text() == ""
     for name in ["tree.json", "node_1_0.json", "node_id1.json"] + [

@@ -582,7 +582,9 @@ bublik-e2e playwright \
   With `--live live.json` (written by `playwright-live`, below), the bundle
   takes the live run's START_TIMESTAMP, CFG, plan and numbering, so its import
   merges into the live run; a missing file, or one with no live run, imports
-  afresh.
+  afresh. The bundle's `RUN_STATUS` replaces the one the live run ended
+  with, so a suite stopped before its end (a cancelled Job) is imported with
+  `--interrupted`, which makes it `INTERRUPTED` rather than `ERROR` or `DONE`.
 
 ### Live import
 
