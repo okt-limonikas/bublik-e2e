@@ -50,19 +50,32 @@ def merged_references(
 ) -> dict[str, Any]:
     """``current`` with the logs bases and revision links added; nothing removed.
 
-    A base no entry has yet goes under ``LOGS_BASE_NAME``, beside the ones
-    there: a preview's log folder for each preview that published a bundle.
+    A base no entry has yet gets an entry of its own, ``LOGS_BASE_NAME`` and
+    then numbered: Bublik takes an entry's URIs for mirrors of one place and
+    links each run under it to the last. A ``LOGS_BASE_NAME`` listing several,
+    as earlier versions wrote it, is split the same way.
     """
     merged = dict(current)
-    bases = [dict(base) for base in merged.get("LOGS_BASES") or []]
-    for logs_base in logs_bases:
-        if any(logs_base in (base.get("uri") or []) for base in bases):
-            continue
-        ours = next((base for base in bases if base.get("name") == LOGS_BASE_NAME), None)
-        if ours is None:
-            bases.append({"name": LOGS_BASE_NAME, "uri": [logs_base]})
+    bases: list[dict[str, Any]] = []
+    for base in merged.get("LOGS_BASES") or []:
+        uris = base.get("uri") or []
+        if base.get("name") == LOGS_BASE_NAME and len(uris) > 1:
+            bases.append({**base, "uri": uris[:1]})
+            bases.extend({"name": "", "uri": [uri]} for uri in uris[1:])
         else:
-            ours["uri"] = [*(ours.get("uri") or []), logs_base]
+            bases.append(dict(base))
+    for logs_base in logs_bases:
+        if not any(logs_base in (base.get("uri") or []) for base in bases):
+            bases.append({"name": "", "uri": [logs_base]})
+    taken = {base["name"] for base in bases}
+    n = 1
+    for base in bases:
+        if base["name"]:
+            continue
+        while (name := LOGS_BASE_NAME if n == 1 else f"{LOGS_BASE_NAME} {n}") in taken:
+            n += 1
+        base["name"] = name
+        taken.add(name)
     merged["LOGS_BASES"] = bases
     if revisions:
         merged["REVISIONS"] = {**(merged.get("REVISIONS") or {}), **revisions}

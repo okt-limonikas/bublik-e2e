@@ -678,7 +678,8 @@ def test_import_from_a_bundle_url_adds_its_base_to_the_project(
     assert fake.imports == [{"url": f"{served}/chat-42-chromium/", "project": "2"}]
     references = fake.configs[0]["content"]
     assert references["LOGS_BASES"] == [
-        {"name": "Published runs", "uri": [f"{url}/logs/", f"{served}/"]}
+        {"name": "Published runs", "uri": [f"{url}/logs/"]},
+        {"name": "Published runs 2", "uri": [f"{served}/"]},
     ]
 
     again = runner.invoke(
@@ -688,9 +689,29 @@ def test_import_from_a_bundle_url_adds_its_base_to_the_project(
     )
     assert again.exit_code == 0, again.output
     assert len(fake.imports) == 1
-    assert fake.configs[0]["content"]["LOGS_BASES"][0]["uri"] == [
-        f"{url}/logs/",
-        f"{served}/",
+    assert fake.configs[0]["content"]["LOGS_BASES"] == references["LOGS_BASES"]
+
+
+def test_each_logs_base_is_an_entry_of_its_own() -> None:
+    # Bublik links a run under an entry to its last URI, so two places in one
+    # entry sent staging's own bundle to .../e2e-results/e2e-results/<id>/.
+    staging = "https://staging.example/logs/"
+    preview = "https://preview.example/logs/e2e-results/"
+    own = "https://staging.example/logs/e2e-results/"
+    mirrors = {"name": "Published runs", "uri": [staging, preview, own]}
+    seeded = {"name": "Seeded", "uri": ["https://a.example/", "https://b.example/"]}
+    merged = bundle_import.merged_references(
+        {"LOGS_BASES": [seeded, mirrors, {"name": "Published runs 2", "uri": ["x"]}]},
+        [staging, "https://next.example/logs/e2e-results/"],
+        {},
+    )
+    assert merged["LOGS_BASES"] == [
+        seeded,
+        {"name": "Published runs", "uri": [staging]},
+        {"name": "Published runs 3", "uri": [preview]},
+        {"name": "Published runs 4", "uri": [own]},
+        {"name": "Published runs 2", "uri": ["x"]},
+        {"name": "Published runs 5", "uri": ["https://next.example/logs/e2e-results/"]},
     ]
 
 
